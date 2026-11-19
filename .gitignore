@@ -1,0 +1,17 @@
+# Secrets & environment
+.env
+.env.*
+.venv/
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyInstaller intermediate build artifacts
+build_release/
+*.spec
+
+# Personal device & runtime configurations (auto-generated on launch)
+config.json
+dist_release/config.json

@@ -1,0 +1,1017 @@
+"""중앙 모듈형 매핑 카드 그리드 — Precision Architectural HUD (방향 A) 스타일.
+
+- 각 카드: [좌측: 물리 키캡/다이얼 라벨 배지] ➔ [중앙: 액션 컬러 태그 & 상세 설정 + REC 녹화] ➔ [우측: 삭제(×)]
+- Win32 `GetKeyNameTextW` 기반 휴먼 리더블 키캡 라벨(`NUM7`, `DIAL CW ↻`, `KNOB CLICK` 등) 표시
+- 슬라이드 `ToggleSwitch`, 단축키 녹화기(`ShortcutRecorderDialog`), 2열 고밀도 그리드 지원
+"""
+
+from __future__ import annotations
+
+from PyQt6.QtCore import QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor
+from PyQt6.QtWidgets import (
+    QButtonGroup,
+    QComboBox,
+    QDialog,
+    QFrame,
+    QGraphicsDropShadowEffect,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
+
+from core.actions import (
+    ActionSpec,
+    ActionType,
+    format_trigger_label,
+    get_action_meta,
+    get_registered_actions,
+)
+from core.config_store import MappingRule
+from core.events import InputEvent, normalize_binding_event_type
+from ui.i18n import tr
+from ui.theme import (
+    ACCENT_CYAN,
+    ACCENT_DANGER,
+    ACCENT_PURPLE,
+    BG_CARD,
+    BG_INPUT,
+    BG_SURFACE,
+    BORDER_HAIRLINE,
+    BORDER_HOVER,
+    TEXT_MUTED,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
+    surface_panel_qss,
+)
+from ui.widgets import ShortcutRecorderDialog, ToggleSwitch, make_vector_icon
+
+
+def _action_to_param_text(action: ActionSpec) -> str:
+    """`ActionSpec` 파라미터를 카드 입력창 편집용 문자열로 변환한다."""
+    t_str = action.type_name
+    p = action.params
+    if t_str == ActionType.KEY_COMBO.value:
+        return str(p.get("combo", ""))
+    if t_str in (ActionType.ZOOM.value, ActionType.MOUSE_WHEEL.value):
+        d = int(p.get("direction", 1))
+        a = float(p.get("accel", 1.0))
+        return f"{d}:{a:g}"
+    if t_str == ActionType.TEXT.value:
+        return str(p.get("text", ""))
+    if t_str == ActionType.MEDIA.value:
+        return str(p.get("command", ""))
+    if t_str == ActionType.BRIGHTNESS.value:
+        return str(p.get("delta", 10))
+    if t_str == ActionType.LAUNCH_APP.value:
+        return str(p.get("executable", p.get("path", "")))
+    if t_str == ActionType.WORKSPACE_LAYOUT.value:
+        return str(p.get("preset", ""))
+    if t_str == ActionType.LAYER_SHIFT.value:
+        if p.get("mode") == "cycle":
+            return "cycle"
+        return str(p.get("layer", "default"))
+    if t_str == ActionType.NONE.value:
+        return ""
+    return str(p.get("value", p.get("param", "")))
+
+
+def _param_text_to_action(action_type_str: str, text: str) -> ActionSpec:
+    """카드 입력창 문자열을 `ActionSpec` 객체로 파싱한다."""
+    val = text.strip()
+    if action_type_str == ActionType.KEY_COMBO.value:
+        return ActionSpec(ActionType.KEY_COMBO, {"combo": val})
+    if action_type_str in (ActionType.ZOOM.value, ActionType.MOUSE_WHEEL.value):
+        direction, accel = 1, 1.0
+        if ":" in val:
+            parts = val.split(":", 1)
+            try:
+                direction = int(parts[0].strip() or "1")
+                accel = float(parts[1].strip() or "1.0")
+            except ValueError:
+                pass
+        elif val:
+            try:
+                direction = int(val)
+            except ValueError:
+                pass
+        params: dict = {"direction": direction, "accel": accel}
+        if action_type_str == ActionType.ZOOM.value:
+            params["modifiers"] = ["ctrl"]
+        return ActionSpec(action_type_str, params)
+    if action_type_str == ActionType.TEXT.value:
+        return ActionSpec(ActionType.TEXT, {"text": text, "method": "clipboard"})
+    if action_type_str == ActionType.MEDIA.value:
+        return ActionSpec(ActionType.MEDIA, {"command": val or "play_pause"})
+    if action_type_str == ActionType.BRIGHTNESS.value:
+        try:
+            delta = int(val or "10")
+        except ValueError:
+            delta = 10
+        return ActionSpec(ActionType.BRIGHTNESS, {"delta": delta})
+    if action_type_str == ActionType.LAUNCH_APP.value:
+        return ActionSpec(ActionType.LAUNCH_APP, {"executable": val})
+    if action_type_str == ActionType.WORKSPACE_LAYOUT.value:
+        return ActionSpec(ActionType.WORKSPACE_LAYOUT, {"preset": val})
+    if action_type_str == ActionType.LAYER_SHIFT.value:
+        if val.lower() == "cycle":
+            return ActionSpec(ActionType.LAYER_SHIFT, {"mode": "cycle"})
+        return ActionSpec(ActionType.LAYER_SHIFT, {"layer": val or "default", "mode": "set"})
+    if action_type_str == ActionType.NONE.value:
+        return ActionSpec(ActionType.NONE, {})
+    return ActionSpec(action_type_str, {"value": val})
+
+
+class MappingCardWidget(QFrame):
+    """모듈형 수평 매핑 카드: [물리 키캡/다이얼] ➔ [액션 컬러 태그 & 상세 설정] ➔ [삭제(×)]."""
+
+    rule_changed = pyqtSignal(object)  # MappingRule
+    delete_requested = pyqtSignal(str)  # rule_id
+
+    def __init__(
+        self,
+        rule: MappingRule,
+        profiles: list[str],
+        layers: list[str],
+        available_presets: list[str] | None = None,
+    ) -> None:
+        super().__init__()
+        self.rule = rule
+        self._is_glowing = False
+        self._available_presets: list[str] = list(available_presets or [])
+        self.setObjectName("MappingCard")
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        self._glow_effect = QGraphicsDropShadowEffect(self)
+        self._glow_effect.setOffset(0, 0)
+        self._glow_effect.setBlurRadius(0)
+        self._glow_effect.setColor(QColor(ACCENT_CYAN))
+        self.setGraphicsEffect(self._glow_effect)
+
+        self._glow_timer = QTimer(self)
+        self._glow_timer.setSingleShot(True)
+        self._glow_timer.timeout.connect(self._clear_glow)
+
+        root = QHBoxLayout(self)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(8)
+
+        # ── [좌측] 물리 키캡 / 다이얼 배지 (휴먼 리더블 라벨 + 서브 Hex) ───────
+        norm_type = normalize_binding_event_type(rule.event_type)
+        code_txt = (
+            f"0x{rule.code:04X}" if isinstance(rule.code, int) else str(rule.code)
+        )
+        human_label = format_trigger_label(norm_type, rule.code)
+
+        keycap = QFrame()
+        keycap.setFixedWidth(104)
+        keycap.setStyleSheet(
+            f"QFrame {{ background-color: {BG_INPUT}; border: 1px solid {BORDER_HAIRLINE}; "
+            "border-top: 1px solid #30303E; border-radius: 7px; }"
+        )
+        kc_layout = QVBoxLayout(keycap)
+        kc_layout.setContentsMargins(6, 6, 6, 6)
+        kc_layout.setSpacing(2)
+
+        icon_kind = (
+            "dial" if "dial" in norm_type else ("mouse" if "mouse" in norm_type else "keypad")
+        )
+        trig_color = ACCENT_PURPLE if "dial" in norm_type else ACCENT_CYAN
+
+        kc_top = QHBoxLayout()
+        kc_top.setContentsMargins(0, 0, 0, 0)
+        kc_top.setSpacing(4)
+        kc_top.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        icon_mini = QLabel()
+        icon_mini.setPixmap(make_vector_icon(icon_kind, trig_color, 11).pixmap(QSize(11, 11)))
+        icon_mini.setStyleSheet("border: none; background: transparent;")
+        kc_top.addWidget(icon_mini)
+
+        type_lbl = QLabel(norm_type.upper().replace("_", " "))
+        type_lbl.setStyleSheet(
+            f"color: {trig_color}; border: none; font-size: 8.5px; font-weight: 800; letter-spacing: 0.4px;"
+        )
+        kc_top.addWidget(type_lbl)
+        kc_layout.addLayout(kc_top)
+
+        self.keycap_label = QLabel(human_label)
+        self.keycap_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.keycap_label.setToolTip(f"{human_label} ({code_txt})")
+        self.keycap_label.setStyleSheet(
+            f"color: {TEXT_PRIMARY}; border: none; font-family: 'Consolas', 'Segoe UI', monospace; "
+            "font-size: 11.5px; font-weight: 800;"
+        )
+        kc_layout.addWidget(self.keycap_label)
+
+        sub_meta = QLabel(f"{code_txt} · {(rule.device_name or rule.device_id)[:10]}")
+        sub_meta.setToolTip(f"{rule.device_name or rule.device_id} ({code_txt})")
+        sub_meta.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sub_meta.setStyleSheet(
+            f"color: {TEXT_MUTED}; border: none; font-family: 'Consolas', monospace; font-size: 8.5px;"
+        )
+        kc_layout.addWidget(sub_meta)
+        root.addWidget(keycap)
+
+        # ── 연결 화살표 ───────────────────────────────────────────────────────
+        arrow_lbl = QLabel("→")
+        arrow_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        arrow_lbl.setStyleSheet("color: #475569; font-size: 12px; font-weight: 700;")
+        root.addWidget(arrow_lbl)
+
+        # ── [중앙] 액션 유형 컬러 태그 & 상세 설정 ───────────────────────────
+        center_col = QVBoxLayout()
+        center_col.setContentsMargins(0, 0, 0, 0)
+        center_col.setSpacing(6)
+
+        meta_row = QHBoxLayout()
+        meta_row.setSpacing(6)
+
+        self.action_tag_lbl = QLabel()
+        meta_row.addWidget(self.action_tag_lbl)
+
+        self.profile_combo = QComboBox()
+        self.profile_combo.setFixedHeight(22)
+        for prof in ["*", *profiles]:
+            if self.profile_combo.findText(prof) == -1:
+                self.profile_combo.addItem(prof)
+        if self.profile_combo.findText(rule.profile) == -1:
+            self.profile_combo.addItem(rule.profile)
+        self.profile_combo.setCurrentText(rule.profile)
+        self.profile_combo.currentTextChanged.connect(self._emit_updated_rule)
+        meta_row.addWidget(self.profile_combo)
+
+        self.layer_combo = QComboBox()
+        self.layer_combo.setFixedHeight(22)
+        for lyr in [*layers, "*"]:
+            if self.layer_combo.findText(lyr) == -1:
+                self.layer_combo.addItem(lyr)
+        if self.layer_combo.findText(rule.layer) == -1:
+            self.layer_combo.addItem(rule.layer)
+        self.layer_combo.setCurrentText(rule.layer)
+        self.layer_combo.currentTextChanged.connect(self._emit_updated_rule)
+        meta_row.addWidget(self.layer_combo)
+
+        meta_row.addStretch(1)
+
+        # 슬라이드 Pill ToggleSwitch (QCheckBox 호환 API 유지)
+        self.enabled_chk = ToggleSwitch(
+            checked=rule.enabled, active_color=ACCENT_CYAN, width=32, height=16
+        )
+        self.enabled_chk.setToolTip("규칙 활성/비활성 전환")
+        self.enabled_chk.toggled.connect(self._emit_updated_rule)
+        meta_row.addWidget(self.enabled_chk)
+        center_col.addLayout(meta_row)
+
+        act_row = QHBoxLayout()
+        act_row.setSpacing(5)
+
+        self.action_combo = QComboBox()
+        self.action_combo.setFixedHeight(26)
+        self._populate_action_combo(rule.action.type_name)
+        self.action_combo.currentIndexChanged.connect(self._on_action_type_changed)
+        act_row.addWidget(self.action_combo)
+
+        initial_param = _action_to_param_text(rule.action)
+        self.param_edit = QLineEdit(initial_param)
+        self.param_edit.setFixedHeight(26)
+        self.param_edit.editingFinished.connect(self._emit_updated_rule)
+        act_row.addWidget(self.param_edit, 1)
+
+        # 단축키 녹화(REC) 버튼 (key_combo 선택 시 활성화)
+        self.record_btn = QPushButton("REC")
+        self.record_btn.setIcon(make_vector_icon("record", ACCENT_CYAN, 11))
+        self.record_btn.setIconSize(QSize(11, 11))
+        self.record_btn.setToolTip("키보드 단축키 직접 녹화")
+        self.record_btn.setFixedHeight(26)
+        self.record_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.record_btn.setStyleSheet(
+            f"QPushButton {{ background-color: {BG_INPUT}; color: {ACCENT_CYAN}; "
+            f"border: 1px solid #1E4D46; border-radius: 5px; padding: 0 7px; "
+            "font-size: 9.5px; font-weight: 800; }"
+            f"QPushButton:hover {{ border-color: {ACCENT_CYAN}; background-color: #0D2724; }}"
+        )
+        self.record_btn.clicked.connect(self._on_record_shortcut)
+        act_row.addWidget(self.record_btn)
+
+        self.preset_combo = QComboBox()
+        self.preset_combo.setFixedHeight(26)
+        self.preset_combo.setEditable(True)
+        self.preset_combo.currentTextChanged.connect(self._on_preset_combo_changed)
+        act_row.addWidget(self.preset_combo, 1)
+
+        apply_btn = QPushButton("✓")
+        apply_btn.setToolTip("변경사항 적용")
+        apply_btn.setFixedSize(26, 26)
+        apply_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        apply_btn.setStyleSheet(
+            f"QPushButton {{ background-color: #0F2421; color: {ACCENT_CYAN}; "
+            "border: 1px solid #1C4E47; border-radius: 5px; font-size: 12px; font-weight: 700; }"
+            f"QPushButton:hover {{ border-color: {ACCENT_CYAN}; background-color: #16332F; }}"
+        )
+        apply_btn.clicked.connect(self._emit_updated_rule)
+        act_row.addWidget(apply_btn)
+        center_col.addLayout(act_row)
+
+        root.addLayout(center_col, 1)
+
+        # ── [우측] 호버형 삭제(×) 버튼 ────────────────────────────────────────
+        del_col = QVBoxLayout()
+        del_col.setContentsMargins(0, 0, 0, 0)
+        self.delete_btn = QPushButton("×")
+        self.delete_btn.setObjectName("DeleteCardButton")
+        self.delete_btn.setToolTip("이 매핑 카드 삭제")
+        self.delete_btn.setFixedSize(22, 22)
+        self.delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.delete_btn.setStyleSheet(
+            "QPushButton { background-color: transparent; color: #52525B; border: 1px solid transparent; "
+            "border-radius: 4px; font-size: 14px; font-weight: 700; }"
+            f"QPushButton:hover {{ background-color: #2E1519; color: {ACCENT_DANGER}; border: 1px solid #7F1D1D; }}"
+        )
+        self.delete_btn.clicked.connect(
+            lambda: self.delete_requested.emit(self.rule.rule_id)
+        )
+        del_col.addWidget(self.delete_btn, 0, Qt.AlignmentFlag.AlignTop)
+        del_col.addStretch(1)
+        root.addLayout(del_col)
+
+        self.set_available_presets(self._available_presets)
+        self._sync_action_input_mode(rule.action.type_name)
+        self._update_action_tag_style(rule.action.type_name)
+        self._apply_card_style(glow_color=None)
+
+    def _on_record_shortcut(self) -> None:
+        dlg = ShortcutRecorderDialog(initial_combo=self.param_edit.text().strip(), parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.recorded_combo:
+            self.param_edit.setText(dlg.recorded_combo)
+            self._emit_updated_rule()
+
+    def _populate_action_combo(self, selected_type: str) -> None:
+        self.action_combo.blockSignals(True)
+        self.action_combo.clear()
+        for meta in get_registered_actions():
+            self.action_combo.addItem(meta.display_name, meta.action_type)
+        idx = self.action_combo.findData(selected_type)
+        if idx < 0:
+            self.action_combo.addItem(selected_type, selected_type)
+            idx = self.action_combo.findData(selected_type)
+        self.action_combo.setCurrentIndex(max(0, idx))
+        self.action_combo.blockSignals(False)
+
+    def refresh_action_registry(self) -> None:
+        """`@register_action` 레지스트리 목록을 다시 읽어 콤보박스를 갱신한다."""
+        cur_type = self.selected_action_type()
+        self._populate_action_combo(cur_type)
+
+    def set_layers(self, layers: list[str]) -> None:
+        """레이어 목록 변경 시 카드 내 레이어 선택 콤보박스를 동기화한다."""
+        cur_layer = self.layer_combo.currentText()
+        self.layer_combo.blockSignals(True)
+        self.layer_combo.clear()
+        for lyr in [*layers, "*"]:
+            if self.layer_combo.findText(lyr) == -1:
+                self.layer_combo.addItem(lyr)
+        if cur_layer and self.layer_combo.findText(cur_layer) == -1:
+            self.layer_combo.addItem(cur_layer)
+        self.layer_combo.setCurrentText(cur_layer or "default")
+        self.layer_combo.blockSignals(False)
+
+    def selected_action_type(self) -> str:
+        """현재 선택된 액션 타입 키 문자열을 반환한다."""
+        data = self.action_combo.currentData()
+        return str(data) if data is not None else self.action_combo.currentText()
+
+    def select_action_type(self, action_type_str: str) -> None:
+        """액션 타입 키 문자열로 드롭다운 선택을 변경한다."""
+        idx = self.action_combo.findData(action_type_str)
+        if idx >= 0:
+            self.action_combo.setCurrentIndex(idx)
+
+    def set_available_presets(self, preset_names: list[str]) -> None:
+        """`창 레이아웃 실행` 액션용 프리셋 드롭다운 목록을 갱신한다."""
+        self._available_presets = list(preset_names)
+        current_val = self.param_edit.text().strip()
+        self.preset_combo.blockSignals(True)
+        self.preset_combo.clear()
+        for name in self._available_presets:
+            self.preset_combo.addItem(name)
+        if current_val and self.preset_combo.findText(current_val) == -1:
+            self.preset_combo.addItem(current_val)
+        if current_val:
+            self.preset_combo.setCurrentText(current_val)
+        elif self._available_presets and self.selected_action_type() == ActionType.WORKSPACE_LAYOUT.value:
+            self.preset_combo.setCurrentIndex(0)
+            self.param_edit.setText(self.preset_combo.currentText())
+        self.preset_combo.blockSignals(False)
+
+    def _sync_action_input_mode(self, action_type_str: str) -> None:
+        meta = get_action_meta(action_type_str)
+        self.param_edit.setPlaceholderText(meta.placeholder if meta else "")
+        is_layout = action_type_str == ActionType.WORKSPACE_LAYOUT.value
+        is_combo = action_type_str == ActionType.KEY_COMBO.value
+        self.param_edit.setVisible(not is_layout)
+        self.preset_combo.setVisible(is_layout)
+        self.record_btn.setVisible(is_combo)
+        if is_layout:
+            cur = self.param_edit.text().strip()
+            if cur:
+                self.preset_combo.blockSignals(True)
+                if self.preset_combo.findText(cur) == -1:
+                    self.preset_combo.addItem(cur)
+                self.preset_combo.setCurrentText(cur)
+                self.preset_combo.blockSignals(False)
+            elif self.preset_combo.count() > 0:
+                self.param_edit.setText(self.preset_combo.currentText())
+
+    def _on_preset_combo_changed(self, text: str) -> None:
+        if self.selected_action_type() == ActionType.WORKSPACE_LAYOUT.value:
+            self.param_edit.setText(text)
+            self._emit_updated_rule()
+
+    def _update_action_tag_style(self, action_type_str: str) -> None:
+        meta = get_action_meta(action_type_str)
+        tag_text = meta.tag_label if meta else action_type_str.upper()
+        color_hex = meta.accent_color if meta else TEXT_SECONDARY
+        self.action_tag_lbl.setText(tag_text)
+        self.action_tag_lbl.setStyleSheet(
+            f"color: {color_hex}; background-color: {BG_INPUT}; "
+            f"border: 1px solid {BORDER_HAIRLINE}; border-left: 2px solid {color_hex}; "
+            "border-radius: 4px; padding: 1px 6px; font-size: 9px; font-weight: 800; letter-spacing: 0.5px;"
+        )
+
+    def _on_action_type_changed(self, _idx: int) -> None:
+        new_type = self.selected_action_type()
+        self._sync_action_input_mode(new_type)
+        self._update_action_tag_style(new_type)
+        self._emit_updated_rule()
+
+    def _emit_updated_rule(self) -> None:
+        action_type_str = self.selected_action_type()
+        param_text = (
+            self.preset_combo.currentText()
+            if action_type_str == ActionType.WORKSPACE_LAYOUT.value
+            else self.param_edit.text()
+        )
+        updated = MappingRule(
+            rule_id=self.rule.rule_id,
+            device_id=self.rule.device_id,
+            device_name=self.rule.device_name,
+            event_type=self.rule.event_type,
+            code=self.rule.code,
+            profile=self.profile_combo.currentText(),
+            layer=self.layer_combo.currentText(),
+            label=self.rule.label,
+            enabled=self.enabled_chk.isChecked(),
+            action=_param_text_to_action(action_type_str, param_text),
+        )
+        self.rule = updated
+        self.rule_changed.emit(updated)
+
+    def _apply_card_style(self, glow_color: str | None) -> None:
+        if glow_color:
+            self.setStyleSheet(
+                f"QFrame#MappingCard {{ background-color: #182127; "
+                f"border: 1.5px solid {glow_color}; border-radius: 9px; }}"
+            )
+            self._glow_effect.setColor(QColor(glow_color))
+            self._glow_effect.setBlurRadius(22)
+        else:
+            self.setStyleSheet(
+                f"QFrame#MappingCard {{ background-color: {BG_CARD}; "
+                f"border: 1px solid {BORDER_HAIRLINE}; border-top: 1px solid #2E2E3B; border-radius: 9px; }}"
+                f"QFrame#MappingCard:hover {{ border: 1px solid {BORDER_HOVER}; background-color: #1E1E26; }}"
+            )
+            self._glow_effect.setBlurRadius(0)
+
+    def trigger_glow(self, color: str | None = None, duration_ms: int = 260) -> None:
+        """실제 입력 트리거 시 카드 액션 색상에 맞춰 네온 글로우를 점등한다."""
+        if color is None:
+            meta = get_action_meta(self.rule.action.type_name)
+            color = meta.accent_color if meta else ACCENT_CYAN
+        self._is_glowing = True
+        self._apply_card_style(glow_color=color)
+        self._glow_timer.start(duration_ms)
+
+    def _clear_glow(self) -> None:
+        self._is_glowing = False
+        self._apply_card_style(glow_color=None)
+
+    @property
+    def is_glowing(self) -> bool:
+        """테스트 및 상태 확인용 글로우 점등 여부를 반환한다."""
+        return self._is_glowing
+
+
+class MappingCardsPanel(QFrame):
+    """2열 모듈형 매핑 카드 그리드, 레이어 탭 스위처, Listen 시각 강조 배너 컨테이너."""
+
+    rule_upserted = pyqtSignal(object)  # MappingRule
+    rule_deleted = pyqtSignal(str)      # rule_id
+    rules_cleared = pyqtSignal(list)    # list[str]
+    layer_selected = pyqtSignal(str)
+    listen_toggled = pyqtSignal(bool)
+    export_matrix_requested = pyqtSignal()
+    import_matrix_requested = pyqtSignal()
+
+    def __init__(
+        self,
+        profiles: list[str] | None = None,
+        layers: list[str] | None = None,
+    ) -> None:
+        super().__init__()
+        self.setObjectName("CenterMappingPanel")
+
+        self._profiles = list(
+            profiles or ["bim_cad", "ide", "media", "simulation", "browser", "default"]
+        )
+        self._layers = list(layers or ["default", "bim", "media"])
+        self._available_presets: list[str] = []
+        self._filter_device_id: str = ""
+        self._filter_profile: str = "전체"
+        self._lang: str = "ko"
+        self._listen_active: bool = False
+        self._cards: dict[str, MappingCardWidget] = {}
+        self._layer_buttons: dict[str, QPushButton] = {}
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(13, 11, 13, 13)
+        layout.setSpacing(10)
+
+        # ── 상단 컨트롤 바 ───────────────────────────────────────────────────
+        header = QHBoxLayout()
+        header.setSpacing(8)
+
+        self.title_lbl = QLabel("MAPPING MATRIX")
+        self.title_lbl.setStyleSheet(
+            f"color: {TEXT_PRIMARY}; font-size: 11px; font-weight: 800; letter-spacing: 1.2px;"
+        )
+        header.addWidget(self.title_lbl)
+
+        self.filter_lbl = QLabel("전체 장치")
+        self.filter_lbl.setStyleSheet(
+            f"color: {ACCENT_CYAN}; background-color: #0B211E; border: 1px solid #194841; "
+            "border-radius: 4px; padding: 2px 8px; font-size: 10px; font-weight: 700;"
+        )
+        header.addWidget(self.filter_lbl)
+
+        self._seg_frame = QFrame()
+        self._seg_frame.setStyleSheet(
+            f"QFrame {{ background-color: {BG_INPUT}; border: 1px solid {BORDER_HAIRLINE}; border-radius: 6px; }}"
+        )
+        self._seg_layout = QHBoxLayout(self._seg_frame)
+        self._seg_layout.setContentsMargins(2, 2, 2, 2)
+        self._seg_layout.setSpacing(2)
+
+        self._layer_btn_group = QButtonGroup(self)
+        self._layer_btn_group.setExclusive(True)
+        header.addWidget(self._seg_frame)
+
+        self.layer_selector = QComboBox()
+        self.layer_selector.setVisible(False)
+        self.layer_selector.currentTextChanged.connect(self._on_layer_changed)
+
+        header.addStretch(1)
+
+        ctrl_frame = QFrame()
+        ctrl_frame.setStyleSheet(
+            f"QFrame {{ background-color: {BG_INPUT}; border: 1px solid {BORDER_HAIRLINE}; border-radius: 6px; }}"
+        )
+        ctrl_layout = QHBoxLayout(ctrl_frame)
+        ctrl_layout.setContentsMargins(3, 2, 3, 2)
+        ctrl_layout.setSpacing(4)
+
+        self.listen_btn = QPushButton("Listen Mode")
+        self.listen_btn.setCheckable(True)
+        self.listen_btn.setFixedHeight(22)
+        self.listen_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.listen_btn.toggled.connect(self._on_listen_btn_toggled)
+        ctrl_layout.addWidget(self.listen_btn)
+
+        self.clear_btn = QPushButton("목록 초기화")
+        self.clear_btn.setObjectName("ClearMappingsButton")
+        self.clear_btn.setFixedHeight(22)
+        self.clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.clear_btn.setStyleSheet(
+            f"QPushButton {{ background-color: transparent; color: {TEXT_SECONDARY}; border: none; "
+            "border-radius: 4px; padding: 0 8px; font-size: 11px; font-weight: 600; }"
+            f"QPushButton:hover {{ background-color: #2B171B; color: {ACCENT_DANGER}; }}"
+        )
+        self.clear_btn.clicked.connect(lambda: self.clear_scoped_cards(confirm=True))
+        ctrl_layout.addWidget(self.clear_btn)
+
+        self.export_btn = QPushButton("내보내기")
+        self.export_btn.setFixedHeight(22)
+        self.export_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.export_btn.setStyleSheet(
+            f"QPushButton {{ background-color: transparent; color: {TEXT_SECONDARY}; border: none; "
+            "border-radius: 4px; padding: 0 8px; font-size: 10.5px; font-weight: 600; }"
+            f"QPushButton:hover {{ background-color: #132A27; color: {ACCENT_CYAN}; }}"
+        )
+        self.export_btn.clicked.connect(self.export_matrix_requested.emit)
+        ctrl_layout.addWidget(self.export_btn)
+
+        self.import_btn = QPushButton("불러오기")
+        self.import_btn.setFixedHeight(22)
+        self.import_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.import_btn.setStyleSheet(
+            f"QPushButton {{ background-color: transparent; color: {TEXT_SECONDARY}; border: none; "
+            "border-radius: 4px; padding: 0 8px; font-size: 10.5px; font-weight: 600; }"
+            f"QPushButton:hover {{ background-color: #1E1630; color: {ACCENT_PURPLE}; }}"
+        )
+        self.import_btn.clicked.connect(self.import_matrix_requested.emit)
+        ctrl_layout.addWidget(self.import_btn)
+        header.addWidget(ctrl_frame)
+
+        self.profile_filter_combo = QComboBox()
+        self.profile_filter_combo.setFixedHeight(26)
+        self.profile_filter_combo.addItem("전체")
+        self.profile_filter_combo.addItem("*")
+        for prof in self._profiles:
+            if self.profile_filter_combo.findText(prof) == -1:
+                self.profile_filter_combo.addItem(prof)
+        self.profile_filter_combo.currentTextChanged.connect(
+            self._on_profile_filter_changed
+        )
+        header.addWidget(self.profile_filter_combo)
+        layout.addLayout(header)
+
+        # ── Listen Mode 시안 점선/글로우 안내 배너 ────────────────────────────
+        self.listen_banner = QLabel(tr("ko", "matrix_listen_banner"))
+        self.listen_banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.listen_banner.setFixedHeight(28)
+        self.listen_banner.setStyleSheet(
+            f"background-color: #072622; color: {ACCENT_CYAN}; "
+            f"border: 1px dashed {ACCENT_CYAN}; border-radius: 6px; "
+            "font-size: 11px; font-weight: 700; letter-spacing: 0.3px;"
+        )
+        self.listen_banner.setVisible(False)
+        layout.addWidget(self.listen_banner)
+
+        # ── 빈 상태 안내 ──────────────────────────────────────────────────────
+        self.empty_hint = QLabel(tr("ko", "matrix_empty_hint"))
+        self.empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty_hint.setStyleSheet(
+            f"color: {TEXT_MUTED}; font-size: 12px; padding: 38px; "
+            f"border: 1px dashed {BORDER_HAIRLINE}; border-radius: 8px; background-color: {BG_INPUT};"
+        )
+        layout.addWidget(self.empty_hint)
+
+        # ── 2열 그리드 스크롤 영역 ────────────────────────────────────────────
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.setStyleSheet("background: transparent;")
+
+        self.cards_container = QWidget()
+        self.cards_container.setStyleSheet("background: transparent;")
+        self.cards_layout = QGridLayout(self.cards_container)
+        self.cards_layout.setContentsMargins(0, 0, 4, 0)
+        self.cards_layout.setHorizontalSpacing(10)
+        self.cards_layout.setVerticalSpacing(10)
+        self.cards_layout.setColumnStretch(0, 1)
+        self.cards_layout.setColumnStretch(1, 1)
+
+        self.scroll.setWidget(self.cards_container)
+        layout.addWidget(self.scroll, 1)
+
+        self.set_layers(self._layers)
+        self._apply_panel_border_style(False)
+        self._update_listen_btn_style(False)
+
+    def apply_language(self, lang: str) -> None:
+        """언어 전환 시 매핑 매트릭스 라벨을 즉시 갱신한다."""
+        self._lang = lang
+        self.title_lbl.setText(tr(lang, "matrix_title"))
+        if not self._filter_device_id:
+            self.filter_lbl.setText(tr(lang, "matrix_all_devices"))
+        self.clear_btn.setText(tr(lang, "clear_mappings"))
+        self.export_btn.setText(tr(lang, "export_matrix"))
+        self.import_btn.setText(tr(lang, "import_matrix"))
+        self.listen_banner.setText(tr(lang, "matrix_listen_banner"))
+        self.empty_hint.setText(tr(lang, "matrix_empty_hint"))
+        self._update_listen_btn_style(self._listen_active)
+
+    def set_layers(self, layers: list[str]) -> None:
+        """사용자 정의 레이어 목록 변경 시 세그먼트 탭과 카드 드롭다운을 동적 재구성한다."""
+        self._layers = list(layers or ["default"])
+        cur_active = self.layer_selector.currentText() or self._layers[0]
+        if cur_active not in self._layers:
+            cur_active = self._layers[0]
+
+        for btn in self._layer_buttons.values():
+            self._layer_btn_group.removeButton(btn)
+            self._seg_layout.removeWidget(btn)
+            btn.setParent(None)
+            btn.deleteLater()
+        self._layer_buttons.clear()
+
+        for idx, lyr in enumerate(self._layers, start=1):
+            btn = QPushButton(f"L{idx} · {lyr}")
+            btn.setCheckable(True)
+            btn.setFixedHeight(22)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda _chk, name=lyr: self._on_layer_tab_clicked(name))
+            self._layer_btn_group.addButton(btn)
+            self._layer_buttons[lyr] = btn
+            self._seg_layout.addWidget(btn)
+
+        self.layer_selector.blockSignals(True)
+        self.layer_selector.clear()
+        for lyr in self._layers:
+            self.layer_selector.addItem(lyr)
+        self.layer_selector.setCurrentText(cur_active)
+        self.layer_selector.blockSignals(False)
+
+        for card in self._cards.values():
+            card.set_layers(self._layers)
+
+        self._sync_layer_tab_styles(cur_active)
+        self._apply_filter_visibility()
+
+    def _apply_panel_border_style(self, listen_active: bool) -> None:
+        if listen_active:
+            self.setStyleSheet(
+                f"QFrame#CenterMappingPanel {{ background-color: #101719; "
+                f"border: 1.5px dashed {ACCENT_CYAN}; border-radius: 9px; }}"
+            )
+        else:
+            self.setStyleSheet(surface_panel_qss("CenterMappingPanel"))
+
+    def _update_listen_btn_style(self, active: bool) -> None:
+        self._listen_active = active
+        if active:
+            self.listen_btn.setIcon(make_vector_icon("record", ACCENT_CYAN, 11))
+            self.listen_btn.setIconSize(QSize(11, 11))
+            self.listen_btn.setText(tr(self._lang, "listen_on"))
+            self.listen_btn.setStyleSheet(
+                f"QPushButton {{ background-color: #08302B; color: {ACCENT_CYAN}; "
+                f"border: 1px solid {ACCENT_CYAN}; border-radius: 4px; padding: 0 9px; "
+                "font-size: 11px; font-weight: 700; }"
+            )
+        else:
+            self.listen_btn.setIcon(make_vector_icon("record", TEXT_SECONDARY, 11))
+            self.listen_btn.setIconSize(QSize(11, 11))
+            self.listen_btn.setText(tr(self._lang, "listen_mode"))
+            self.listen_btn.setStyleSheet(
+                f"QPushButton {{ background-color: transparent; color: {TEXT_PRIMARY}; border: none; "
+                "border-radius: 4px; padding: 0 9px; font-size: 11px; font-weight: 600; }"
+                f"QPushButton:hover {{ background-color: {BG_CARD}; color: {ACCENT_CYAN}; }}"
+            )
+
+    def _sync_layer_tab_styles(self, active_layer: str) -> None:
+        for lyr, btn in self._layer_buttons.items():
+            is_active = lyr == active_layer
+            btn.blockSignals(True)
+            btn.setChecked(is_active)
+            btn.blockSignals(False)
+            if is_active:
+                btn.setStyleSheet(
+                    f"QPushButton {{ background-color: #1C152E; color: {ACCENT_PURPLE}; "
+                    f"border: 1px solid {ACCENT_PURPLE}; border-radius: 4px; padding: 0 10px; "
+                    "font-size: 10px; font-weight: 800; }"
+                )
+            else:
+                btn.setStyleSheet(
+                    f"QPushButton {{ background-color: transparent; color: {TEXT_SECONDARY}; "
+                    "border: none; border-radius: 4px; padding: 0 10px; "
+                    "font-size: 10px; font-weight: 600; }"
+                    f"QPushButton:hover {{ color: {TEXT_PRIMARY}; background-color: {BG_SURFACE}; }}"
+                )
+
+    def _on_layer_tab_clicked(self, layer: str) -> None:
+        self.layer_selector.setCurrentText(layer)
+
+    def _on_listen_btn_toggled(self, checked: bool) -> None:
+        self._update_listen_btn_style(checked)
+        self._apply_panel_border_style(checked)
+        self.listen_banner.setVisible(checked)
+        self.listen_toggled.emit(checked)
+
+    def set_listen_active(self, active: bool) -> None:
+        """좌측 패널과 Listen 상태 표시 및 시안 점선 배너를 양방향 동기화한다."""
+        if self.listen_btn.isChecked() != active:
+            self.listen_btn.blockSignals(True)
+            self.listen_btn.setChecked(active)
+            self.listen_btn.blockSignals(False)
+        self._update_listen_btn_style(active)
+        self._apply_panel_border_style(active)
+        self.listen_banner.setVisible(active)
+
+    def _on_profile_filter_changed(self, profile: str) -> None:
+        self._filter_profile = profile or "전체"
+        self._apply_filter_visibility()
+
+    def _on_layer_changed(self, layer: str) -> None:
+        self._sync_layer_tab_styles(layer)
+        self._apply_filter_visibility()
+        self.layer_selected.emit(layer)
+
+    def set_active_layer(self, layer: str) -> None:
+        """활성 레이어 탭과 숨김 콤보박스를 동기화한다."""
+        if self.layer_selector.findText(layer) == -1:
+            self.layer_selector.addItem(layer)
+        self.layer_selector.blockSignals(True)
+        self.layer_selector.setCurrentText(layer)
+        self.layer_selector.blockSignals(False)
+        self._sync_layer_tab_styles(layer)
+        self._apply_filter_visibility()
+
+    def set_device_filter(self, device_id: str, label: str = "") -> None:
+        """좌측 패널에서 선택한 장치만 필터링해 표시한다."""
+        self._filter_device_id = device_id
+        self.filter_lbl.setText(
+            label or (tr(self._lang, "matrix_all_devices") if not device_id else device_id)
+        )
+        self._apply_filter_visibility()
+
+    def _card_matches_current_scope(self, card: MappingCardWidget) -> bool:
+        if self._filter_device_id and card.rule.device_id != self._filter_device_id:
+            return False
+        if self._filter_profile != "전체" and card.rule.profile != self._filter_profile:
+            return False
+        active_layer = self.layer_selector.currentText()
+        if active_layer and card.rule.layer not in (active_layer, "*"):
+            return False
+        return True
+
+    def _apply_filter_visibility(self) -> None:
+        while self.cards_layout.count():
+            self.cards_layout.takeAt(0)
+
+        visible_cards: list[MappingCardWidget] = []
+        for card in self._cards.values():
+            show = self._card_matches_current_scope(card)
+            card.setVisible(show)
+            if show:
+                visible_cards.append(card)
+
+        for idx, card in enumerate(visible_cards):
+            self.cards_layout.addWidget(card, idx // 2, idx % 2)
+
+        spacer_row = (len(visible_cards) + 1) // 2
+        self.cards_layout.setRowStretch(spacer_row, 1)
+        for r in range(spacer_row):
+            self.cards_layout.setRowStretch(r, 0)
+
+        self.empty_hint.setVisible(len(visible_cards) == 0)
+        self.scroll.setVisible(len(visible_cards) > 0)
+
+    def load_rules(self, rules: list[MappingRule]) -> None:
+        """저장된 `MappingRule` 목록으로부터 2열 카드 그리드를 일괄 재구성한다."""
+        while self.cards_layout.count():
+            self.cards_layout.takeAt(0)
+
+        for card in self._cards.values():
+            card.setParent(None)
+            card.deleteLater()
+        self._cards.clear()
+
+        for rule in rules:
+            self._add_card_widget(rule)
+        self._apply_filter_visibility()
+
+    def set_available_presets(self, preset_names: list[str]) -> None:
+        """모든 매핑 카드의 `창 레이아웃 실행` 프리셋 드롭다운을 일괄 갱신한다."""
+        self._available_presets = list(preset_names)
+        for card in self._cards.values():
+            card.set_available_presets(self._available_presets)
+
+    def refresh_action_registry(self) -> None:
+        """동적 등록된 액션을 모든 매핑 카드 드롭다운에 즉시 반영한다."""
+        for card in self._cards.values():
+            card.refresh_action_registry()
+
+    def _add_card_widget(self, rule: MappingRule) -> MappingCardWidget:
+        card = MappingCardWidget(
+            rule,
+            profiles=self._profiles,
+            layers=self._layers,
+            available_presets=self._available_presets,
+        )
+        card.rule_changed.connect(self.rule_upserted.emit)
+        card.delete_requested.connect(self._on_delete_card)
+        self._cards[rule.rule_id] = card
+        self._apply_filter_visibility()
+        return card
+
+    def _on_delete_card(self, rule_id: str) -> None:
+        card = self._cards.pop(rule_id, None)
+        if card is not None:
+            self.cards_layout.removeWidget(card)
+            card.setParent(None)
+            card.deleteLater()
+        self._apply_filter_visibility()
+        self.rule_deleted.emit(rule_id)
+
+    def clear_scoped_cards(self, confirm: bool = True) -> list[str]:
+        """확인 대화상자를 거쳐 현재 레이어/프로파일 범위의 매핑 카드를 일괄 삭제한다."""
+        active_layer = self.layer_selector.currentText() or "default"
+        target_ids = [
+            rid
+            for rid, card in self._cards.items()
+            if self._card_matches_current_scope(card)
+        ]
+        if not target_ids:
+            return []
+
+        if confirm:
+            prof_label = self._filter_profile
+            reply = QMessageBox.question(
+                self,
+                "매핑 목록 초기화",
+                f"현재 레이어('{active_layer}') / 프로파일('{prof_label}')의 "
+                f"매핑 카드 {len(target_ids)}개를 모두 삭제하시겠습니까?\n"
+                "삭제된 항목은 config.json에서도 즉시 제거됩니다.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return []
+
+        for rid in target_ids:
+            card = self._cards.pop(rid, None)
+            if card is not None:
+                self.cards_layout.removeWidget(card)
+                card.setParent(None)
+                card.deleteLater()
+
+        self._apply_filter_visibility()
+        self.rules_cleared.emit(target_ids)
+        return target_ids
+
+    def create_or_focus_from_event(
+        self,
+        event: InputEvent,
+        device_name: str,
+        profile: str = "*",
+        layer: str = "default",
+    ) -> MappingRule | None:
+        """Listen Mode에서 포착된 `InputEvent`에 대한 매핑 카드를 동적 생성 또는 점등한다.
+
+        키보드/마우스 등의 `release(up)` 이벤트는 카드 생성에서 제외한다.
+        """
+        if event.is_release:
+            return None
+
+        for card in self._cards.values():
+            if (
+                card.rule.trigger_key == event.binding_key
+                and card.rule.profile == profile
+                and card.rule.layer == layer
+            ):
+                card.trigger_glow(ACCENT_PURPLE)
+                return card.rule
+
+        norm_type = normalize_binding_event_type(event.event_type)
+        default_action = self._suggest_default_action(event)
+        new_rule = MappingRule(
+            device_id=event.device_id,
+            device_name=device_name or event.device_name,
+            event_type=norm_type,
+            code=event.code,
+            profile=profile,
+            layer=layer,
+            action=default_action,
+        )
+        card = self._add_card_widget(new_rule)
+        card.trigger_glow(ACCENT_CYAN)
+        self.rule_upserted.emit(new_rule)
+        return new_rule
+
+    @staticmethod
+    def _suggest_default_action(event: InputEvent) -> ActionSpec:
+        et = event.event_type_str
+        if et == "dial_cw":
+            return ActionSpec(ActionType.ZOOM, {"direction": 1, "accel": 1.2, "modifiers": ["ctrl"]})
+        if et == "dial_ccw":
+            return ActionSpec(ActionType.ZOOM, {"direction": -1, "accel": 1.2, "modifiers": ["ctrl"]})
+        if et in ("dial_press", "dial_double_click"):
+            return ActionSpec(ActionType.MEDIA, {"command": "play_pause"})
+        if et == "dial_long_press":
+            return ActionSpec(ActionType.LAYER_SHIFT, {"mode": "cycle"})
+        return ActionSpec(ActionType.KEY_COMBO, {"combo": ""})
+
+    def flash_card_for_rule(self, rule_id: str, color: str | None = None) -> bool:
+        """트리거된 규칙의 카드 테두리를 네온 글로우로 점등한다."""
+        card = self._cards.get(rule_id)
+        if card is None:
+            return False
+        card.trigger_glow(color=color)
+        return True
+
+    def flash_matching_event(self, event: InputEvent) -> int:
+        """이벤트와 일치하는 모든 카드를 네온 글로우로 점등한다."""
+        flashed = 0
+        ev_key = event.binding_key
+        for card in self._cards.values():
+            if card.rule.trigger_key == ev_key:
+                card.trigger_glow()
+                flashed += 1
+        return flashed

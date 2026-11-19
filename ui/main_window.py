@@ -1,11 +1,11 @@
-"""PyQt6 좌측 220px 내비게이션 레일 + 6뷰 전환형 Precision Architectural HUD 콘솔."""
+"""PyQt6 좌측 220px 내비게이션 레일 + 6뷰 전환형 Obsidian Tactile HUD 커맨드 센터."""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, QSize, Qt, QUrl, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QObject, Qt, QUrl, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QAction, QColor, QDesktopServices, QIcon, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
@@ -41,22 +41,37 @@ from ui.device_panel import DevicePanel
 from ui.i18n import tr
 from ui.mapping_cards import MappingCardsPanel
 from ui.theme import (
+    ACCENT_AMBER,
+    ACCENT_AMBER_BG,
+    ACCENT_AMBER_BORDER,
+    ACCENT_AMBER_GLOW,
     ACCENT_CYAN,
-    ACCENT_DANGER,
-    ACCENT_ORANGE,
-    ACCENT_PURPLE,
-    ARCHITECTURAL_HUD_QSS,
-    BG_CARD,
-    BG_INPUT,
-    BG_SURFACE,
+    ACCENT_CYAN_BG,
+    ACCENT_CYAN_BORDER,
+    BG_BASE,
+    BG_INSET,
     BORDER_HAIRLINE,
+    FONT_MONO,
+    OBSIDIAN_TACTILE_HUD_QSS,
+    STATUS_DANGER,
+    STATUS_DANGER_BG,
+    STATUS_DANGER_BORDER,
+    STATUS_OK,
+    STATUS_OK_BG,
+    STATUS_OK_BORDER,
+    STATUS_WARN,
+    STATUS_WARN_BG,
+    STATUS_WARN_BORDER,
     TEXT_MUTED,
     TEXT_PRIMARY,
     TEXT_SECONDARY,
     apply_win11_dark_titlebar,
+    badge_qss,
+    inset_slot_qss,
     surface_panel_qss,
+    tactile_button_qss,
 )
-from ui.widgets import make_vector_icon
+from ui.widgets import LedStatusPill, NavRailButton
 from ui.workspace_views import (
     HardwareHubPage,
     MappingLayerPage,
@@ -76,14 +91,14 @@ _NAV_ITEMS: tuple[tuple[str, str, str], ...] = (
 
 
 def _create_nexus_tray_icon() -> QIcon:
-    """외부 아이콘 파일 없이 시안/퍼플 모노라인 네온 배지 트레이 아이콘을 동적 생성한다."""
+    """외부 아이콘 파일 없이 Obsidian/Amber/Cyan 배지 트레이 아이콘을 동적 생성한다."""
     pix = QPixmap(32, 32)
-    pix.fill(QColor("#0B0B0E"))
+    pix.fill(QColor(BG_BASE))
     painter = QPainter(pix)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(QColor(ACCENT_AMBER))
+    painter.drawRoundedRect(2, 2, 28, 28, 5, 5)
     painter.setPen(QColor(ACCENT_CYAN))
-    painter.drawRoundedRect(2, 2, 28, 28, 6, 6)
-    painter.setPen(QColor(ACCENT_PURPLE))
     painter.drawText(pix.rect(), Qt.AlignmentFlag.AlignCenter, "NX")
     painter.end()
     return QIcon(pix)
@@ -101,7 +116,7 @@ class NexusSignalBridge(QObject):
 
 
 class MainWindow(QMainWindow):
-    """NEXUS Remapper 6뷰 전환형 Precision Architectural HUD 커맨드 센터."""
+    """NEXUS Remapper 6뷰 전환형 Obsidian Tactile HUD 커맨드 센터."""
 
     def __init__(
         self,
@@ -133,11 +148,11 @@ class MainWindow(QMainWindow):
         self._tray_bypass_action: QAction | None = None
         self._tray_quit_action: QAction | None = None
 
-        self.nav_buttons: list[QPushButton] = []
+        self.nav_buttons: list[NavRailButton] = []
 
         self.setWindowTitle("NEXUS Remapper & Workspace Orchestrator")
         self.resize(1380, 840)
-        self.setStyleSheet(ARCHITECTURAL_HUD_QSS)
+        self.setStyleSheet(OBSIDIAN_TACTILE_HUD_QSS)
 
         self._build_ui()
         self._wire_signals()
@@ -155,16 +170,16 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         root = QVBoxLayout(central)
-        root.setContentsMargins(10, 8, 10, 8)
+        root.setContentsMargins(12, 8, 12, 8)
         root.setSpacing(8)
 
-        # ── 1. 최상단 글로벌 상태 바 ──────────────────────────────────────────
+        # ── 1. 최상단 통합 커맨드 헤더 (44px, Amber 타이틀 + Cyan 텔레메트리) ──
         header = QFrame()
         header.setObjectName("TopHeaderBar")
         header.setFixedHeight(44)
-        header.setStyleSheet(surface_panel_qss("TopHeaderBar"))
+        header.setStyleSheet(surface_panel_qss("TopHeaderBar", radius=6))
         h_layout = QHBoxLayout(header)
-        h_layout.setContentsMargins(14, 0, 12, 0)
+        h_layout.setContentsMargins(16, 0, 12, 0)
         h_layout.setSpacing(10)
 
         brand = QLabel("NEXUS")
@@ -173,9 +188,10 @@ class MainWindow(QMainWindow):
         )
         h_layout.addWidget(brand)
 
-        sub_brand = QLabel("ARCHITECTURAL HUD")
+        sub_brand = QLabel("TACTILE HUD")
         sub_brand.setStyleSheet(
-            f"color: {ACCENT_CYAN}; font-size: 9px; font-weight: 800; letter-spacing: 1.2px;"
+            f"color: {ACCENT_AMBER}; font-family: {FONT_MONO}; "
+            "font-size: 9.5px; font-weight: 800; letter-spacing: 1.2px;"
         )
         h_layout.addWidget(sub_brand)
 
@@ -184,47 +200,41 @@ class MainWindow(QMainWindow):
         sep.setStyleSheet(f"background-color: {BORDER_HAIRLINE};")
         h_layout.addWidget(sep)
 
-        # 엔진 상태 LED 배지
-        self.engine_pill = QFrame()
-        self.engine_pill.setFixedHeight(26)
-        ep_layout = QHBoxLayout(self.engine_pill)
-        ep_layout.setContentsMargins(9, 0, 9, 0)
-        ep_layout.setSpacing(6)
-
-        self.engine_led = QLabel()
-        self.engine_led.setFixedSize(7, 7)
-        self.engine_led.setStyleSheet(
-            f"background-color: {ACCENT_ORANGE}; border-radius: 3px; border: none;"
-        )
-        ep_layout.addWidget(self.engine_led)
-
-        self.engine_badge = QLabel(self.engine_manager.status_badge)
-        self.engine_badge.setStyleSheet(
-            f"color: {TEXT_PRIMARY}; font-family: 'Consolas', monospace; "
-            "font-size: 10.5px; font-weight: 800; border: none;"
-        )
-        ep_layout.addWidget(self.engine_badge)
+        # 엔진 상태 6px LED 배지 (`LedStatusPill`)
+        self.engine_pill = LedStatusPill(self.engine_manager.status_badge, color=STATUS_WARN)
+        self.engine_led = self.engine_pill.led
+        self.engine_badge = self.engine_pill.text_label
         h_layout.addWidget(self.engine_pill)
 
-        # 현재 활성 .exe 표시기
+        # 현재 활성 .exe 표시기 (Telemetry Cyan)
         self.active_proc_lbl = QLabel("ACTIVE: - [default]")
         self.active_proc_lbl.setFixedHeight(26)
         self.active_proc_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.active_proc_lbl.setStyleSheet(
-            f"color: {ACCENT_PURPLE}; background-color: #161221; border: 1px solid #382262; "
-            "border-radius: 5px; padding: 0 10px; font-family: 'Consolas', monospace; "
-            "font-size: 10.5px; font-weight: 700;"
+            badge_qss(
+                fg=ACCENT_CYAN,
+                bg=ACCENT_CYAN_BG,
+                border=ACCENT_CYAN_BORDER,
+                mono=True,
+                padding="0 10px",
+                font_size=10,
+            )
         )
         h_layout.addWidget(self.active_proc_lbl)
 
-        # 현재 적용 레이어 배지
+        # 현재 적용 레이어 배지 (Primary Amber)
         self.active_layer_lbl = QLabel(f"LAYER: {self.executor.active_layer}")
         self.active_layer_lbl.setFixedHeight(26)
         self.active_layer_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.active_layer_lbl.setStyleSheet(
-            f"color: {ACCENT_CYAN}; background-color: #0B2522; border: 1px solid #1C5E55; "
-            "border-radius: 5px; padding: 0 10px; font-family: 'Consolas', monospace; "
-            "font-size: 10.5px; font-weight: 800;"
+            badge_qss(
+                fg=ACCENT_AMBER_GLOW,
+                bg=ACCENT_AMBER_BG,
+                border=ACCENT_AMBER_BORDER,
+                mono=True,
+                padding="0 10px",
+                font_size=10,
+            )
         )
         h_layout.addWidget(self.active_layer_lbl)
 
@@ -243,9 +253,14 @@ class MainWindow(QMainWindow):
         self.header_topology_lbl.setFixedHeight(26)
         self.header_topology_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.header_topology_lbl.setStyleSheet(
-            f"color: {TEXT_SECONDARY}; background-color: {BG_INPUT}; border: 1px solid {BORDER_HAIRLINE}; "
-            "border-radius: 5px; padding: 0 10px; font-family: 'Consolas', monospace; "
-            "font-size: 10px; font-weight: 600;"
+            badge_qss(
+                fg=TEXT_SECONDARY,
+                bg=BG_INSET,
+                border=BORDER_HAIRLINE,
+                mono=True,
+                padding="0 10px",
+                font_size=10,
+            )
         )
         h_layout.addWidget(self.header_topology_lbl)
 
@@ -254,31 +269,27 @@ class MainWindow(QMainWindow):
         # ── 2. 중앙 본문: 좌측 220px 내비게이션 레일 + 우측 6뷰 QStackedWidget ──
         body_row = QHBoxLayout()
         body_row.setContentsMargins(0, 0, 0, 0)
-        body_row.setSpacing(10)
+        body_row.setSpacing(12)
 
         nav_rail = QFrame()
         nav_rail.setObjectName("LeftNavRail")
-        nav_rail.setFixedWidth(224)
-        nav_rail.setStyleSheet(surface_panel_qss("LeftNavRail"))
+        nav_rail.setFixedWidth(220)
+        nav_rail.setStyleSheet(surface_panel_qss("LeftNavRail", radius=6))
         nav_layout = QVBoxLayout(nav_rail)
         nav_layout.setContentsMargins(10, 12, 10, 12)
-        nav_layout.setSpacing(5)
+        nav_layout.setSpacing(4)
 
         self.nav_hdr_lbl = QLabel("NAVIGATION")
         self.nav_hdr_lbl.setStyleSheet(
-            f"color: {TEXT_MUTED}; font-size: 9.5px; font-weight: 800; letter-spacing: 1.5px; padding-left: 6px;"
+            f"color: {TEXT_MUTED}; font-family: {FONT_MONO}; font-size: 9.5px; "
+            "font-weight: 800; letter-spacing: 1.4px; padding-left: 6px; padding-bottom: 4px;"
         )
         nav_layout.addWidget(self.nav_hdr_lbl)
 
         self._nav_group = QButtonGroup(self)
         self._nav_group.setExclusive(True)
         for idx, (num, label, icon_kind) in enumerate(_NAV_ITEMS):
-            btn = QPushButton(f"  {num}  {label}")
-            btn.setIcon(make_vector_icon(icon_kind, TEXT_SECONDARY, 15))
-            btn.setIconSize(QSize(15, 15))
-            btn.setCheckable(True)
-            btn.setFixedHeight(38)
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn = NavRailButton(num, label, icon_kind)
             btn.clicked.connect(lambda _chk, page_idx=idx: self.switch_page(page_idx))
             self._nav_group.addButton(btn, idx)
             self.nav_buttons.append(btn)
@@ -287,16 +298,16 @@ class MainWindow(QMainWindow):
         nav_layout.addStretch(1)
 
         rail_info = QFrame()
-        rail_info.setStyleSheet(
-            f"QFrame {{ background-color: {BG_INPUT}; border: 1px solid {BORDER_HAIRLINE}; border-radius: 7px; }}"
-        )
+        rail_info.setObjectName("NavRailFooterSlot")
+        rail_info.setStyleSheet(inset_slot_qss("NavRailFooterSlot", radius=4))
         ri_layout = QVBoxLayout(rail_info)
-        ri_layout.setContentsMargins(10, 9, 10, 9)
-        ri_layout.setSpacing(7)
+        ri_layout.setContentsMargins(10, 8, 10, 8)
+        ri_layout.setSpacing(8)
 
         self.panic_rail_lbl = QLabel("비상 탈출: ESC + F12")
         self.panic_rail_lbl.setStyleSheet(
-            f"color: {ACCENT_ORANGE}; font-size: 10.5px; font-weight: 700; border: none;"
+            f"color: {STATUS_DANGER}; font-family: {FONT_MONO}; font-size: 10px; "
+            "font-weight: 700; border: none; background: transparent;"
         )
         ri_layout.addWidget(self.panic_rail_lbl)
 
@@ -304,9 +315,7 @@ class MainWindow(QMainWindow):
         self.hide_tray_btn.setFixedHeight(26)
         self.hide_tray_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.hide_tray_btn.setStyleSheet(
-            f"QPushButton {{ background-color: {BG_CARD}; color: {TEXT_SECONDARY}; "
-            f"border: 1px solid {BORDER_HAIRLINE}; border-radius: 5px; font-size: 10.5px; font-weight: 600; }}"
-            f"QPushButton:hover {{ border-color: {ACCENT_CYAN}; color: {ACCENT_CYAN}; }}"
+            tactile_button_qss("default", radius=4, padding="0 8px", font_size=10)
         )
         self.hide_tray_btn.clicked.connect(self.close)
         ri_layout.addWidget(self.hide_tray_btn)
@@ -382,33 +391,33 @@ class MainWindow(QMainWindow):
         body_row.addWidget(self.page_stack, 1)
         root.addLayout(body_row, 1)
 
-        # ── 3. 하단 26px 실시간 트리거 로그 상태 바 ───────────────────────────
+        # ── 3. 하단 26px 실시간 텔레메트리 상태 티커 ──────────────────────────
         self.status_ticker = QFrame()
         self.status_ticker.setObjectName("BottomStatusTicker")
         self.status_ticker.setFixedHeight(26)
-        self.status_ticker.setStyleSheet(
-            f"QFrame#BottomStatusTicker {{ background-color: {BG_SURFACE}; "
-            f"border: 1px solid {BORDER_HAIRLINE}; border-radius: 6px; }}"
-        )
+        self.status_ticker.setStyleSheet(surface_panel_qss("BottomStatusTicker", radius=4))
         st_layout = QHBoxLayout(self.status_ticker)
-        st_layout.setContentsMargins(10, 0, 10, 0)
+        st_layout.setContentsMargins(12, 0, 12, 0)
         st_layout.setSpacing(8)
 
-        self.ticker_dot = QLabel("▸")
+        self.ticker_dot = QLabel()
+        self.ticker_dot.setFixedSize(6, 6)
         self.ticker_dot.setStyleSheet(
-            f"color: {ACCENT_CYAN}; font-size: 11px; font-weight: 800;"
+            f"background-color: {ACCENT_CYAN}; border-radius: 3px; border: none;"
         )
         st_layout.addWidget(self.ticker_dot)
 
-        self.status_ticker_lbl = QLabel("NEXUS 커맨드 센터 준비 완료 — 입력 대기 중")
+        self.status_ticker_lbl = QLabel("NEXUS TACTILE HUD READY — STANDBY")
         self.status_ticker_lbl.setStyleSheet(
-            f"color: {TEXT_SECONDARY}; font-family: 'Consolas', 'Malgun Gothic', monospace; font-size: 10.5px;"
+            f"color: {TEXT_SECONDARY}; font-family: {FONT_MONO}; font-size: 10.5px; "
+            "border: none; background: transparent;"
         )
         st_layout.addWidget(self.status_ticker_lbl, 1)
 
         panic_hint = QLabel("PANIC EXIT: ESC + F12")
         panic_hint.setStyleSheet(
-            f"color: {ACCENT_ORANGE}; font-size: 9.5px; font-weight: 800; letter-spacing: 0.6px;"
+            f"color: {STATUS_DANGER}; font-family: {FONT_MONO}; font-size: 9.5px; "
+            "font-weight: 800; letter-spacing: 0.6px; border: none; background: transparent;"
         )
         st_layout.addWidget(panic_hint)
 
@@ -423,27 +432,10 @@ class MainWindow(QMainWindow):
         self.page_stack.setCurrentIndex(index)
         for i, btn in enumerate(self.nav_buttons):
             active = i == index
-            icon_kind = _NAV_ITEMS[i][2]
             btn.blockSignals(True)
             btn.setChecked(active)
             btn.blockSignals(False)
-            btn.setIcon(
-                make_vector_icon(icon_kind, ACCENT_CYAN if active else TEXT_SECONDARY, 15)
-            )
-            if active:
-                btn.setStyleSheet(
-                    f"QPushButton {{ background-color: #142225; color: {ACCENT_CYAN}; "
-                    f"border: 1px solid #1C5E55; border-left: 3px solid {ACCENT_CYAN}; "
-                    "border-radius: 6px; padding-left: 10px; text-align: left; "
-                    "font-size: 11px; font-weight: 800; }"
-                )
-            else:
-                btn.setStyleSheet(
-                    f"QPushButton {{ background-color: transparent; color: {TEXT_SECONDARY}; "
-                    "border: 1px solid transparent; border-radius: 6px; padding-left: 10px; "
-                    "text-align: left; font-size: 11px; font-weight: 600; }"
-                    f"QPushButton:hover {{ background-color: {BG_CARD}; color: {TEXT_PRIMARY}; }}"
-                )
+            btn.apply_active_style(active)
         if index == 2:
             self.layer_page.refresh_running_processes()
 
@@ -607,24 +599,14 @@ class MainWindow(QMainWindow):
     def _update_engine_badge(self, mode: EngineMode, reason: str = "") -> None:
         badge_text = self.engine_manager.status_badge
         if mode == EngineMode.KERNEL:
-            fg, bg, bd = ACCENT_CYAN, "#0B2522", "#165E54"
+            fg, bg, bd = STATUS_OK, STATUS_OK_BG, STATUS_OK_BORDER
         elif mode == EngineMode.USER_FALLBACK:
-            fg, bg, bd = ACCENT_ORANGE, "#25170F", "#6B3618"
+            fg, bg, bd = STATUS_WARN, STATUS_WARN_BG, STATUS_WARN_BORDER
         else:
-            fg, bg, bd = ACCENT_DANGER, "#251417", "#6B2027"
+            fg, bg, bd = STATUS_DANGER, STATUS_DANGER_BG, STATUS_DANGER_BORDER
 
         self.engine_pill.setToolTip(reason or badge_text)
-        self.engine_pill.setStyleSheet(
-            f"QFrame {{ background-color: {bg}; border: 1px solid {bd}; border-radius: 5px; }}"
-        )
-        self.engine_led.setStyleSheet(
-            f"background-color: {fg}; border-radius: 3px; border: none;"
-        )
-        self.engine_badge.setText(badge_text)
-        self.engine_badge.setStyleSheet(
-            f"color: {fg}; font-family: 'Consolas', monospace; "
-            "font-size: 10.5px; font-weight: 800; border: none;"
-        )
+        self.engine_pill.set_state(badge_text, fg=fg, bg=bg, border=bd)
         self._update_tray_status()
 
     def _refresh_topology_dropdown(self) -> None:
@@ -643,7 +625,9 @@ class MainWindow(QMainWindow):
         self.mapping_panel.set_available_presets([p.name for p in presets])
 
     def _set_ticker(self, message: str, accent: str = ACCENT_CYAN) -> None:
-        self.ticker_dot.setStyleSheet(f"color: {accent}; font-size: 11px; font-weight: 800;")
+        self.ticker_dot.setStyleSheet(
+            f"background-color: {accent}; border-radius: 3px; border: none;"
+        )
         self.status_ticker_lbl.setText(message)
 
     def append_log(self, message: str, accent: str = ACCENT_CYAN) -> None:
@@ -681,7 +665,7 @@ class MainWindow(QMainWindow):
             res = self.executor.execute(rule.action, event=event)
             self.append_log(
                 f"[TRIGGER] {event.device_name} | {event.event_type_str} ➔ {res.detail}",
-                accent=ACCENT_CYAN,
+                accent=ACCENT_AMBER_GLOW,
             )
         else:
             self.mapping_panel.flash_matching_event(event)
@@ -736,7 +720,7 @@ class MainWindow(QMainWindow):
         self._update_tray_status()
         self._set_ticker(
             f"[CONTEXT] {self._active_process} (프로파일:{ctx.matched_profile} · 레이어:{self.executor.active_layer})",
-            accent=ACCENT_PURPLE,
+            accent=ACCENT_CYAN,
         )
 
     @pyqtSlot(object)
@@ -745,7 +729,7 @@ class MainWindow(QMainWindow):
         if diff.added or diff.removed:
             self.append_log(
                 f"[HOT-PLUG] +{len(diff.added)} / -{len(diff.removed)} (연결={diff.connected_count})",
-                accent=ACCENT_ORANGE,
+                accent=STATUS_WARN,
             )
 
     @pyqtSlot(object, str)
@@ -758,7 +742,7 @@ class MainWindow(QMainWindow):
         self._update_engine_badge(EngineMode.STOPPED, "Panic Exit (ESC+F12)")
         self.append_log(
             "[PANIC EXIT] ESC + F12 감지 ➔ 모든 훅 및 엔진 즉시 해제",
-            accent=ACCENT_ORANGE,
+            accent=STATUS_DANGER,
         )
         self.force_quit()
 
@@ -799,7 +783,7 @@ class MainWindow(QMainWindow):
             self._save_all_config()
             self.append_log(
                 f"[ALIAS] {device_id} ➔ '{alias or '(기본 이름)'}'",
-                accent=ACCENT_CYAN,
+                accent=ACCENT_AMBER,
             )
 
     @pyqtSlot(str, bool)
@@ -813,7 +797,7 @@ class MainWindow(QMainWindow):
         self._save_all_config()
         self.append_log(
             f"[SAFEGUARD] {device_id} ➔ {'PROTECTED' if protected else 'AUXILIARY'}",
-            accent=ACCENT_ORANGE if protected else ACCENT_CYAN,
+            accent=STATUS_WARN if protected else STATUS_OK,
         )
 
     # ── 사용자 정의 레이어 관리 슬롯 ─────────────────────────────────────────
@@ -827,7 +811,7 @@ class MainWindow(QMainWindow):
             return
         self._sync_layers_everywhere()
         self._save_all_config()
-        self.append_log(f"[LAYER] 새 레이어 생성 ➔ '{name}'", accent=ACCENT_CYAN)
+        self.append_log(f"[LAYER] 새 레이어 생성 ➔ '{name}'", accent=ACCENT_AMBER)
 
     @pyqtSlot(str, str)
     def _on_rename_layer(self, old_name: str, new_name: str) -> None:
@@ -839,7 +823,7 @@ class MainWindow(QMainWindow):
         if self.executor.active_layer == old_name:
             self.executor.shift_layer(new_name, mode="set")
         self._save_all_config()
-        self.append_log(f"[LAYER] 이름 변경 ➔ '{old_name}' → '{new_name}'", accent=ACCENT_PURPLE)
+        self.append_log(f"[LAYER] 이름 변경 ➔ '{old_name}' → '{new_name}'", accent=ACCENT_AMBER)
 
     @pyqtSlot(str)
     def _on_delete_layer(self, name: str) -> None:
@@ -850,7 +834,7 @@ class MainWindow(QMainWindow):
         if self.executor.active_layer == name:
             self.executor.shift_layer("default", mode="set")
         self._save_all_config()
-        self.append_log(f"[LAYER] 레이어 삭제 완료 ➔ '{name}'", accent=ACCENT_ORANGE)
+        self.append_log(f"[LAYER] 레이어 삭제 완료 ➔ '{name}'", accent=STATUS_DANGER)
 
     @pyqtSlot(str, list)
     def _on_layer_processes_updated(self, layer_name: str, processes: list[str]) -> None:
@@ -859,7 +843,7 @@ class MainWindow(QMainWindow):
             self._save_all_config()
             self.append_log(
                 f"[LAYER BIND] '{layer_name}' ➔ {', '.join(processes) or '없음'}",
-                accent=ACCENT_PURPLE,
+                accent=ACCENT_CYAN,
             )
 
     @pyqtSlot(object)
@@ -879,7 +863,7 @@ class MainWindow(QMainWindow):
         self._save_all_config()
         self.append_log(
             f"[MAPPING] 선택 범위 매핑 목록 초기화 완료 ({removed}개 삭제)",
-            accent=ACCENT_ORANGE,
+            accent=STATUS_WARN,
         )
 
     @pyqtSlot(str)
@@ -892,14 +876,14 @@ class MainWindow(QMainWindow):
         self.active_layer_lbl.setText(f"LAYER: {layer}")
         self._save_all_config()
         self._update_tray_status()
-        self.append_log(f"[LAYER] 활성 레이어 전환 ➔ {layer}", accent=ACCENT_PURPLE)
+        self.append_log(f"[LAYER] 활성 레이어 전환 ➔ {layer}", accent=ACCENT_AMBER)
 
     @pyqtSlot(str)
     def _on_topology_key_changed(self, key: str) -> None:
         self.orchestrator.select_profile_mode(key or AUTO_PROFILE_KEY)
         self._refresh_topology_dropdown()
         self._save_all_config()
-        self.append_log(f"[TOPOLOGY] 모니터 환경 모드 ➔ {key}", accent=ACCENT_PURPLE)
+        self.append_log(f"[TOPOLOGY] 모니터 환경 모드 ➔ {key}", accent=ACCENT_CYAN)
 
     def _on_capture_snapshot(self) -> None:
         default_name = f"Preset_{len(self.orchestrator.list_presets()) + 1}"
@@ -917,7 +901,7 @@ class MainWindow(QMainWindow):
         self._save_all_config()
         self.append_log(
             f"[SNAPSHOT] '{preset.name}' 저장 ({len(preset.placements)}개 창, {preset.topology_fingerprint})",
-            accent=ACCENT_CYAN,
+            accent=ACCENT_AMBER,
         )
 
     @pyqtSlot(bool)
@@ -931,7 +915,7 @@ class MainWindow(QMainWindow):
         self.append_log(
             f"[LAYOUT] '{preset_name}' 적용 ➔ 이동 {res.moved_count}, 실행 {res.launched_count}, "
             f"건너뜀 {len(res.skipped_processes)}",
-            accent=ACCENT_PURPLE,
+            accent=ACCENT_AMBER,
         )
 
     @pyqtSlot(str)
@@ -983,17 +967,17 @@ class MainWindow(QMainWindow):
         if enabled:
             self.bypass_btn.setText(tr(self._language, "bypass_on"))
             self.bypass_btn.setStyleSheet(
-                f"QPushButton {{ background-color: #2B170F; color: {ACCENT_ORANGE}; "
-                f"border: 1px solid {ACCENT_ORANGE}; border-radius: 5px; padding: 0 10px; "
-                "font-size: 10.5px; font-weight: 800; }"
+                f"QPushButton {{ background-color: {STATUS_WARN_BG}; color: {STATUS_WARN}; "
+                f"border: 1px solid {STATUS_WARN}; border-radius: 4px; padding: 0 10px; "
+                f"font-family: {FONT_MONO}; font-size: 10px; font-weight: 800; }}"
             )
         else:
             self.bypass_btn.setText(tr(self._language, "bypass_off"))
             self.bypass_btn.setStyleSheet(
-                f"QPushButton {{ background-color: #0B2522; color: {ACCENT_CYAN}; "
-                "border: 1px solid #1C5E55; border-radius: 5px; padding: 0 10px; "
-                "font-size: 10.5px; font-weight: 800; }"
-                f"QPushButton:hover {{ border-color: {ACCENT_CYAN}; }}"
+                f"QPushButton {{ background-color: {STATUS_OK_BG}; color: {STATUS_OK}; "
+                f"border: 1px solid {STATUS_OK_BORDER}; border-radius: 4px; padding: 0 10px; "
+                f"font-family: {FONT_MONO}; font-size: 10px; font-weight: 800; }}"
+                f"QPushButton:hover {{ border-color: {STATUS_OK}; }}"
             )
 
         self.settings_page.set_bypass_checked(enabled)
@@ -1014,8 +998,7 @@ class MainWindow(QMainWindow):
         self.nav_hdr_lbl.setText(tr(self._language, "nav_header"))
         self.panic_rail_lbl.setText(tr(self._language, "panic_short"))
         for idx, btn in enumerate(self.nav_buttons):
-            num = f"{idx + 1:02d}"
-            btn.setText(f"  {num}  {tr(self._language, f'nav_{idx}')}")
+            btn.set_label(tr(self._language, f"nav_{idx}"))
 
         self.hide_tray_btn.setText(tr(self._language, "hide_to_tray"))
         self.bypass_btn.setText(
@@ -1048,7 +1031,7 @@ class MainWindow(QMainWindow):
         self.config_store.backup_to_file(file_path)
         self.append_log(
             f"[BACKUP] 전체 설정 백업 완료 ➔ {file_path.name}",
-            accent=ACCENT_CYAN,
+            accent=STATUS_OK,
         )
 
     def restore_full_config(self, file_path: Path) -> None:
@@ -1070,7 +1053,7 @@ class MainWindow(QMainWindow):
         self._sync_initial_state()
         self.append_log(
             f"[RESTORE] 전체 설정 복원 완료 ➔ {file_path.name}",
-            accent=ACCENT_PURPLE,
+            accent=ACCENT_AMBER,
         )
 
     @pyqtSlot(bool)
@@ -1085,7 +1068,7 @@ class MainWindow(QMainWindow):
         try:
             cmd = set_windows_startup(checked, minimized=minimized)
             msg = f"등록 ({cmd})" if checked else "해제"
-            self.append_log(f"[STARTUP] Windows 자동 실행 {msg}", accent=ACCENT_CYAN)
+            self.append_log(f"[STARTUP] Windows 자동 실행 {msg}", accent=STATUS_OK)
         except OSError as exc:
             QMessageBox.warning(self, "시작 프로그램 설정 오류", str(exc))
         self._save_all_config()
@@ -1107,14 +1090,14 @@ class MainWindow(QMainWindow):
             "[BYPASS] 리매핑 일시 정지 활성화 (원본 입력 통과)"
             if checked
             else "[BYPASS] 리매핑 재개",
-            accent=ACCENT_ORANGE if checked else ACCENT_CYAN,
+            accent=STATUS_WARN if checked else STATUS_OK,
         )
 
     @pyqtSlot(str)
     def _on_language_changed(self, lang: str) -> None:
         self.apply_language(lang)
         self._save_all_config()
-        self.append_log(f"[I18N] UI 언어 전환 ➔ {lang}", accent=ACCENT_PURPLE)
+        self.append_log(f"[I18N] UI 언어 전환 ➔ {lang}", accent=ACCENT_CYAN)
 
     @pyqtSlot()
     def _on_backup_config_dialog(self) -> None:
@@ -1159,7 +1142,7 @@ class MainWindow(QMainWindow):
         self._save_all_config()
         self.append_log(
             f"[CONFIG] 저장 완료 ➔ {self.config_store.config_path}",
-            accent=ACCENT_CYAN,
+            accent=STATUS_OK,
         )
 
     # ── 매핑 매트릭스 / 프리셋 / 단일 레이어 Export & Import ─────────────────
@@ -1171,7 +1154,7 @@ class MainWindow(QMainWindow):
         )
         self.append_log(
             f"[EXPORT] 매핑 매트릭스 {count}건 저장 완료 ➔ {file_path.name}",
-            accent=ACCENT_CYAN,
+            accent=STATUS_OK,
         )
         return count
 
@@ -1187,7 +1170,7 @@ class MainWindow(QMainWindow):
         self._save_all_config()
         self.append_log(
             f"[IMPORT] 매핑 매트릭스 {count}건 불러오기({mode}) ➔ 총 {len(self.config_store.mappings)}건",
-            accent=ACCENT_PURPLE,
+            accent=ACCENT_AMBER,
         )
         return count
 
@@ -1195,7 +1178,7 @@ class MainWindow(QMainWindow):
         count = self.orchestrator.export_presets_to_file(file_path)
         self.append_log(
             f"[EXPORT] 창 배치 프리셋 {count}건 저장 완료 ➔ {file_path.name}",
-            accent=ACCENT_CYAN,
+            accent=STATUS_OK,
         )
         return count
 
@@ -1206,7 +1189,7 @@ class MainWindow(QMainWindow):
         self._save_all_config()
         self.append_log(
             f"[IMPORT] 창 배치 프리셋 {count}건 불러오기({mode}) 완료",
-            accent=ACCENT_PURPLE,
+            accent=ACCENT_AMBER,
         )
         return count
 
@@ -1214,7 +1197,7 @@ class MainWindow(QMainWindow):
         count = self.config_store.export_layer_to_file(layer_name, file_path)
         self.append_log(
             f"[EXPORT] 레이어 '{layer_name}' ({count}건) 저장 완료 ➔ {file_path.name}",
-            accent=ACCENT_CYAN,
+            accent=STATUS_OK,
         )
         return count
 
@@ -1225,7 +1208,7 @@ class MainWindow(QMainWindow):
         self._save_all_config()
         self.append_log(
             f"[IMPORT] 레이어 '{layer_name}' ({count}건) 불러오기({mode}) 완료",
-            accent=ACCENT_PURPLE,
+            accent=ACCENT_AMBER,
         )
         return layer_name, count
 

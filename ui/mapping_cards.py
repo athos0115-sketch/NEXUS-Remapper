@@ -1,20 +1,17 @@
-"""중앙 모듈형 매핑 카드 그리드 — Precision Architectural HUD (방향 A) 스타일.
+"""중앙 모듈형 매핑 카드 그리드 — Obsidian Tactile HUD 스타일.
 
-- 각 카드: [좌측: 물리 키캡/다이얼 라벨 배지] ➔ [중앙: 액션 컬러 태그 & 상세 설정 + REC 녹화] ➔ [우측: 삭제(×)]
-- Win32 `GetKeyNameTextW` 기반 휴먼 리더블 키캡 라벨(`NUM7`, `DIAL CW ↻`, `KNOB CLICK` 등) 표시
-- 슬라이드 `ToggleSwitch`, 단축키 녹화기(`ShortcutRecorderDialog`), 2열 고밀도 그리드 지원
+- 각 카드: [좌측: PhysicalKeycapBadge(Inset 슬롯 + Raised 키캡)] ➔ [중앙: 이원화 액션 태그 & 설정 + REC/눈금 슬라이더] ➔ [우측: 삭제(×)]
+- 모든 색상·물성 토큰은 `ui/theme.py`에서 중앙 참조하며, 트리거 시 240ms 동안 앰버/시안 테두리로 발광한다.
 """
 
 from __future__ import annotations
 
 from PyQt6.QtCore import QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QButtonGroup,
     QComboBox,
     QDialog,
     QFrame,
-    QGraphicsDropShadowEffect,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -38,20 +35,36 @@ from core.config_store import MappingRule
 from core.events import InputEvent, normalize_binding_event_type
 from ui.i18n import tr
 from ui.theme import (
+    ACCENT_AMBER,
+    ACCENT_AMBER_BG,
+    ACCENT_AMBER_BORDER,
+    ACCENT_AMBER_GLOW,
     ACCENT_CYAN,
-    ACCENT_DANGER,
-    ACCENT_PURPLE,
-    BG_CARD,
-    BG_INPUT,
+    ACCENT_CYAN_BG,
+    ACCENT_CYAN_BORDER,
+    BG_HOVER,
+    BG_INSET,
     BG_SURFACE,
     BORDER_HAIRLINE,
-    BORDER_HOVER,
+    FONT_MONO,
     TEXT_MUTED,
     TEXT_PRIMARY,
     TEXT_SECONDARY,
+    action_accent_color,
+    badge_qss,
+    inset_slot_qss,
+    raised_card_qss,
+    section_header_qss,
     surface_panel_qss,
+    tactile_button_qss,
 )
-from ui.widgets import ShortcutRecorderDialog, ToggleSwitch, make_vector_icon
+from ui.widgets import (
+    PhysicalKeycapBadge,
+    PrecisionTickSlider,
+    ShortcutRecorderDialog,
+    ToggleSwitch,
+    make_vector_icon,
+)
 
 
 def _action_to_param_text(action: ActionSpec) -> str:
@@ -130,7 +143,7 @@ def _param_text_to_action(action_type_str: str, text: str) -> ActionSpec:
 
 
 class MappingCardWidget(QFrame):
-    """모듈형 수평 매핑 카드: [물리 키캡/다이얼] ➔ [액션 컬러 태그 & 상세 설정] ➔ [삭제(×)]."""
+    """모듈형 수평 매핑 카드: [PhysicalKeycapBadge] ➔ [액션 설정 + REC/슬라이더] ➔ [삭제(×)]."""
 
     rule_changed = pyqtSignal(object)  # MappingRule
     delete_requested = pyqtSignal(str)  # rule_id
@@ -149,81 +162,43 @@ class MappingCardWidget(QFrame):
         self.setObjectName("MappingCard")
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
-        self._glow_effect = QGraphicsDropShadowEffect(self)
-        self._glow_effect.setOffset(0, 0)
-        self._glow_effect.setBlurRadius(0)
-        self._glow_effect.setColor(QColor(ACCENT_CYAN))
-        self.setGraphicsEffect(self._glow_effect)
-
         self._glow_timer = QTimer(self)
         self._glow_timer.setSingleShot(True)
         self._glow_timer.timeout.connect(self._clear_glow)
 
         root = QHBoxLayout(self)
-        root.setContentsMargins(10, 10, 10, 10)
+        root.setContentsMargins(12, 10, 10, 10)
         root.setSpacing(8)
 
-        # ── [좌측] 물리 키캡 / 다이얼 배지 (휴먼 리더블 라벨 + 서브 Hex) ───────
+        # ── [좌측] 음각 슬롯 내부 돌출 물리 키캡 배지 ─────────────────────────
         norm_type = normalize_binding_event_type(rule.event_type)
         code_txt = (
             f"0x{rule.code:04X}" if isinstance(rule.code, int) else str(rule.code)
         )
         human_label = format_trigger_label(norm_type, rule.code)
-
-        keycap = QFrame()
-        keycap.setFixedWidth(104)
-        keycap.setStyleSheet(
-            f"QFrame {{ background-color: {BG_INPUT}; border: 1px solid {BORDER_HAIRLINE}; "
-            "border-top: 1px solid #30303E; border-radius: 7px; }"
-        )
-        kc_layout = QVBoxLayout(keycap)
-        kc_layout.setContentsMargins(6, 6, 6, 6)
-        kc_layout.setSpacing(2)
-
         icon_kind = (
             "dial" if "dial" in norm_type else ("mouse" if "mouse" in norm_type else "keypad")
         )
-        trig_color = ACCENT_PURPLE if "dial" in norm_type else ACCENT_CYAN
+        trig_color = ACCENT_CYAN if "dial" in norm_type else ACCENT_AMBER
 
-        kc_top = QHBoxLayout()
-        kc_top.setContentsMargins(0, 0, 0, 0)
-        kc_top.setSpacing(4)
-        kc_top.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        icon_mini = QLabel()
-        icon_mini.setPixmap(make_vector_icon(icon_kind, trig_color, 11).pixmap(QSize(11, 11)))
-        icon_mini.setStyleSheet("border: none; background: transparent;")
-        kc_top.addWidget(icon_mini)
-
-        type_lbl = QLabel(norm_type.upper().replace("_", " "))
-        type_lbl.setStyleSheet(
-            f"color: {trig_color}; border: none; font-size: 8.5px; font-weight: 800; letter-spacing: 0.4px;"
+        self.keycap_badge = PhysicalKeycapBadge(
+            icon_kind=icon_kind,
+            type_text=norm_type.upper().replace("_", " "),
+            keycap_text=human_label,
+            sub_text=f"{code_txt} · {(rule.device_name or rule.device_id)[:9]}",
+            accent_color=trig_color,
+            tooltip=f"{human_label} ({code_txt}) — {rule.device_name or rule.device_id}",
         )
-        kc_top.addWidget(type_lbl)
-        kc_layout.addLayout(kc_top)
-
-        self.keycap_label = QLabel(human_label)
-        self.keycap_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.keycap_label.setToolTip(f"{human_label} ({code_txt})")
-        self.keycap_label.setStyleSheet(
-            f"color: {TEXT_PRIMARY}; border: none; font-family: 'Consolas', 'Segoe UI', monospace; "
-            "font-size: 11.5px; font-weight: 800;"
-        )
-        kc_layout.addWidget(self.keycap_label)
-
-        sub_meta = QLabel(f"{code_txt} · {(rule.device_name or rule.device_id)[:10]}")
-        sub_meta.setToolTip(f"{rule.device_name or rule.device_id} ({code_txt})")
-        sub_meta.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        sub_meta.setStyleSheet(
-            f"color: {TEXT_MUTED}; border: none; font-family: 'Consolas', monospace; font-size: 8.5px;"
-        )
-        kc_layout.addWidget(sub_meta)
-        root.addWidget(keycap)
+        self.keycap_label = self.keycap_badge.keycap_label
+        root.addWidget(self.keycap_badge)
 
         # ── 연결 화살표 ───────────────────────────────────────────────────────
         arrow_lbl = QLabel("→")
         arrow_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        arrow_lbl.setStyleSheet("color: #475569; font-size: 12px; font-weight: 700;")
+        arrow_lbl.setStyleSheet(
+            f"color: {TEXT_MUTED}; font-family: {FONT_MONO}; font-size: 12px; font-weight: 700; "
+            "border: none; background: transparent;"
+        )
         root.addWidget(arrow_lbl)
 
         # ── [중앙] 액션 유형 컬러 태그 & 상세 설정 ───────────────────────────
@@ -261,9 +236,9 @@ class MappingCardWidget(QFrame):
 
         meta_row.addStretch(1)
 
-        # 슬라이드 Pill ToggleSwitch (QCheckBox 호환 API 유지)
+        # 음각 트랙 LED 토글 스위치 (QCheckBox 호환 API 유지)
         self.enabled_chk = ToggleSwitch(
-            checked=rule.enabled, active_color=ACCENT_CYAN, width=32, height=16
+            checked=rule.enabled, active_color=ACCENT_AMBER, width=34, height=17
         )
         self.enabled_chk.setToolTip("규칙 활성/비활성 전환")
         self.enabled_chk.toggled.connect(self._emit_updated_rule)
@@ -271,7 +246,7 @@ class MappingCardWidget(QFrame):
         center_col.addLayout(meta_row)
 
         act_row = QHBoxLayout()
-        act_row.setSpacing(5)
+        act_row.setSpacing(6)
 
         self.action_combo = QComboBox()
         self.action_combo.setFixedHeight(26)
@@ -282,21 +257,18 @@ class MappingCardWidget(QFrame):
         initial_param = _action_to_param_text(rule.action)
         self.param_edit = QLineEdit(initial_param)
         self.param_edit.setFixedHeight(26)
-        self.param_edit.editingFinished.connect(self._emit_updated_rule)
+        self.param_edit.editingFinished.connect(self._on_param_edited)
         act_row.addWidget(self.param_edit, 1)
 
-        # 단축키 녹화(REC) 버튼 (key_combo 선택 시 활성화)
+        # 단축키 녹화(REC) 버튼 (key_combo 선택 시 표시)
         self.record_btn = QPushButton("REC")
-        self.record_btn.setIcon(make_vector_icon("record", ACCENT_CYAN, 11))
+        self.record_btn.setIcon(make_vector_icon("record", ACCENT_AMBER_GLOW, 11))
         self.record_btn.setIconSize(QSize(11, 11))
         self.record_btn.setToolTip("키보드 단축키 직접 녹화")
         self.record_btn.setFixedHeight(26)
         self.record_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.record_btn.setStyleSheet(
-            f"QPushButton {{ background-color: {BG_INPUT}; color: {ACCENT_CYAN}; "
-            f"border: 1px solid #1E4D46; border-radius: 5px; padding: 0 7px; "
-            "font-size: 9.5px; font-weight: 800; }"
-            f"QPushButton:hover {{ border-color: {ACCENT_CYAN}; background-color: #0D2724; }}"
+            tactile_button_qss("amber", radius=4, padding="0 8px", font_size=10, bold=True)
         )
         self.record_btn.clicked.connect(self._on_record_shortcut)
         act_row.addWidget(self.record_btn)
@@ -312,13 +284,24 @@ class MappingCardWidget(QFrame):
         apply_btn.setFixedSize(26, 26)
         apply_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         apply_btn.setStyleSheet(
-            f"QPushButton {{ background-color: #0F2421; color: {ACCENT_CYAN}; "
-            "border: 1px solid #1C4E47; border-radius: 5px; font-size: 12px; font-weight: 700; }"
-            f"QPushButton:hover {{ border-color: {ACCENT_CYAN}; background-color: #16332F; }}"
+            tactile_button_qss("amber", radius=4, padding="0px", font_size=12, bold=True)
         )
         apply_btn.clicked.connect(self._emit_updated_rule)
         act_row.addWidget(apply_btn)
         center_col.addLayout(act_row)
+
+        # 줌/휠 가속 배율용 PrecisionTickSlider (zoom / mouse_wheel 선택 시 표시)
+        self.accel_slider = PrecisionTickSlider(
+            minimum=0.5,
+            maximum=3.0,
+            value=float(rule.action.params.get("accel", 1.0)),
+            step=0.1,
+            ticks=11,
+            accent_color=ACCENT_CYAN,
+            unit="x",
+        )
+        self.accel_slider.value_changed.connect(self._on_accel_slider_changed)
+        center_col.addWidget(self.accel_slider)
 
         root.addLayout(center_col, 1)
 
@@ -331,9 +314,7 @@ class MappingCardWidget(QFrame):
         self.delete_btn.setFixedSize(22, 22)
         self.delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.delete_btn.setStyleSheet(
-            "QPushButton { background-color: transparent; color: #52525B; border: 1px solid transparent; "
-            "border-radius: 4px; font-size: 14px; font-weight: 700; }"
-            f"QPushButton:hover {{ background-color: #2E1519; color: {ACCENT_DANGER}; border: 1px solid #7F1D1D; }}"
+            tactile_button_qss("ghost_danger", radius=4, padding="0px", font_size=14, bold=True)
         )
         self.delete_btn.clicked.connect(
             lambda: self.delete_requested.emit(self.rule.rule_id)
@@ -352,6 +333,24 @@ class MappingCardWidget(QFrame):
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.recorded_combo:
             self.param_edit.setText(dlg.recorded_combo)
             self._emit_updated_rule()
+
+    def _on_param_edited(self) -> None:
+        act_type = self.selected_action_type()
+        if act_type in (ActionType.ZOOM.value, ActionType.MOUSE_WHEEL.value):
+            parsed = _param_text_to_action(act_type, self.param_edit.text())
+            self.accel_slider.blockSignals(True)
+            self.accel_slider.setValue(float(parsed.params.get("accel", 1.0)))
+            self.accel_slider.blockSignals(False)
+        self._emit_updated_rule()
+
+    def _on_accel_slider_changed(self, accel_val: float) -> None:
+        act_type = self.selected_action_type()
+        if act_type not in (ActionType.ZOOM.value, ActionType.MOUSE_WHEEL.value):
+            return
+        parsed = _param_text_to_action(act_type, self.param_edit.text())
+        direction = int(parsed.params.get("direction", 1))
+        self.param_edit.setText(f"{direction}:{accel_val:g}")
+        self._emit_updated_rule()
 
     def _populate_action_combo(self, selected_type: str) -> None:
         self.action_combo.blockSignals(True)
@@ -416,9 +415,16 @@ class MappingCardWidget(QFrame):
         self.param_edit.setPlaceholderText(meta.placeholder if meta else "")
         is_layout = action_type_str == ActionType.WORKSPACE_LAYOUT.value
         is_combo = action_type_str == ActionType.KEY_COMBO.value
+        is_analog = action_type_str in (ActionType.ZOOM.value, ActionType.MOUSE_WHEEL.value)
         self.param_edit.setVisible(not is_layout)
         self.preset_combo.setVisible(is_layout)
         self.record_btn.setVisible(is_combo)
+        self.accel_slider.setVisible(is_analog)
+        if is_analog:
+            parsed = _param_text_to_action(action_type_str, self.param_edit.text())
+            self.accel_slider.blockSignals(True)
+            self.accel_slider.setValue(float(parsed.params.get("accel", 1.0)))
+            self.accel_slider.blockSignals(False)
         if is_layout:
             cur = self.param_edit.text().strip()
             if cur:
@@ -438,12 +444,18 @@ class MappingCardWidget(QFrame):
     def _update_action_tag_style(self, action_type_str: str) -> None:
         meta = get_action_meta(action_type_str)
         tag_text = meta.tag_label if meta else action_type_str.upper()
-        color_hex = meta.accent_color if meta else TEXT_SECONDARY
+        color_hex = action_accent_color(action_type_str)
         self.action_tag_lbl.setText(tag_text)
         self.action_tag_lbl.setStyleSheet(
-            f"color: {color_hex}; background-color: {BG_INPUT}; "
-            f"border: 1px solid {BORDER_HAIRLINE}; border-left: 2px solid {color_hex}; "
-            "border-radius: 4px; padding: 1px 6px; font-size: 9px; font-weight: 800; letter-spacing: 0.5px;"
+            badge_qss(
+                fg=color_hex,
+                bg=BG_INSET,
+                border=BORDER_HAIRLINE,
+                mono=True,
+                left_accent=color_hex,
+                padding="1px 6px",
+                font_size=9,
+            )
         )
 
     def _on_action_type_changed(self, _idx: int) -> None:
@@ -477,26 +489,25 @@ class MappingCardWidget(QFrame):
     def _apply_card_style(self, glow_color: str | None) -> None:
         if glow_color:
             self.setStyleSheet(
-                f"QFrame#MappingCard {{ background-color: #182127; "
-                f"border: 1.5px solid {glow_color}; border-radius: 9px; }}"
+                raised_card_qss(
+                    "MappingCard",
+                    border_accent=glow_color,
+                    bg_override=BG_HOVER,
+                    radius=6,
+                )
             )
-            self._glow_effect.setColor(QColor(glow_color))
-            self._glow_effect.setBlurRadius(22)
         else:
-            self.setStyleSheet(
-                f"QFrame#MappingCard {{ background-color: {BG_CARD}; "
-                f"border: 1px solid {BORDER_HAIRLINE}; border-top: 1px solid #2E2E3B; border-radius: 9px; }}"
-                f"QFrame#MappingCard:hover {{ border: 1px solid {BORDER_HOVER}; background-color: #1E1E26; }}"
-            )
-            self._glow_effect.setBlurRadius(0)
+            self.setStyleSheet(raised_card_qss("MappingCard", radius=6))
 
-    def trigger_glow(self, color: str | None = None, duration_ms: int = 260) -> None:
-        """실제 입력 트리거 시 카드 액션 색상에 맞춰 네온 글로우를 점등한다."""
+    def trigger_glow(self, color: str | None = None, duration_ms: int = 240) -> None:
+        """실제 입력 트리거 시 240ms 동안 카드 및 물리 키캡 테두리를 점등 후 감쇠한다."""
         if color is None:
-            meta = get_action_meta(self.rule.action.type_name)
-            color = meta.accent_color if meta else ACCENT_CYAN
+            color = action_accent_color(self.rule.action.type_name)
+            if color == ACCENT_AMBER:
+                color = ACCENT_AMBER_GLOW
         self._is_glowing = True
         self._apply_card_style(glow_color=color)
+        self.keycap_badge.flash(color=color, duration_ms=duration_ms)
         self._glow_timer.start(duration_ms)
 
     def _clear_glow(self) -> None:
@@ -510,7 +521,7 @@ class MappingCardWidget(QFrame):
 
 
 class MappingCardsPanel(QFrame):
-    """2열 모듈형 매핑 카드 그리드, 레이어 탭 스위처, Listen 시각 강조 배너 컨테이너."""
+    """2열 모듈형 매핑 카드 그리드, 레이어 탭 스위처, Listen 배너 컨테이너."""
 
     rule_upserted = pyqtSignal(object)  # MappingRule
     rule_deleted = pyqtSignal(str)      # rule_id
@@ -541,30 +552,33 @@ class MappingCardsPanel(QFrame):
         self._layer_buttons: dict[str, QPushButton] = {}
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(13, 11, 13, 13)
-        layout.setSpacing(10)
+        layout.setContentsMargins(16, 12, 16, 16)
+        layout.setSpacing(12)
 
         # ── 상단 컨트롤 바 ───────────────────────────────────────────────────
         header = QHBoxLayout()
         header.setSpacing(8)
 
         self.title_lbl = QLabel("MAPPING MATRIX")
-        self.title_lbl.setStyleSheet(
-            f"color: {TEXT_PRIMARY}; font-size: 11px; font-weight: 800; letter-spacing: 1.2px;"
-        )
+        self.title_lbl.setStyleSheet(section_header_qss())
         header.addWidget(self.title_lbl)
 
         self.filter_lbl = QLabel("전체 장치")
         self.filter_lbl.setStyleSheet(
-            f"color: {ACCENT_CYAN}; background-color: #0B211E; border: 1px solid #194841; "
-            "border-radius: 4px; padding: 2px 8px; font-size: 10px; font-weight: 700;"
+            badge_qss(
+                fg=ACCENT_CYAN,
+                bg=ACCENT_CYAN_BG,
+                border=ACCENT_CYAN_BORDER,
+                mono=False,
+                padding="2px 8px",
+                font_size=10,
+            )
         )
         header.addWidget(self.filter_lbl)
 
         self._seg_frame = QFrame()
-        self._seg_frame.setStyleSheet(
-            f"QFrame {{ background-color: {BG_INPUT}; border: 1px solid {BORDER_HAIRLINE}; border-radius: 6px; }}"
-        )
+        self._seg_frame.setObjectName("LayerSegmentSlot")
+        self._seg_frame.setStyleSheet(inset_slot_qss("LayerSegmentSlot", radius=4))
         self._seg_layout = QHBoxLayout(self._seg_frame)
         self._seg_layout.setContentsMargins(2, 2, 2, 2)
         self._seg_layout.setSpacing(2)
@@ -580,9 +594,8 @@ class MappingCardsPanel(QFrame):
         header.addStretch(1)
 
         ctrl_frame = QFrame()
-        ctrl_frame.setStyleSheet(
-            f"QFrame {{ background-color: {BG_INPUT}; border: 1px solid {BORDER_HAIRLINE}; border-radius: 6px; }}"
-        )
+        ctrl_frame.setObjectName("MatrixCtrlSlot")
+        ctrl_frame.setStyleSheet(inset_slot_qss("MatrixCtrlSlot", radius=4))
         ctrl_layout = QHBoxLayout(ctrl_frame)
         ctrl_layout.setContentsMargins(3, 2, 3, 2)
         ctrl_layout.setSpacing(4)
@@ -599,9 +612,7 @@ class MappingCardsPanel(QFrame):
         self.clear_btn.setFixedHeight(22)
         self.clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.clear_btn.setStyleSheet(
-            f"QPushButton {{ background-color: transparent; color: {TEXT_SECONDARY}; border: none; "
-            "border-radius: 4px; padding: 0 8px; font-size: 11px; font-weight: 600; }"
-            f"QPushButton:hover {{ background-color: #2B171B; color: {ACCENT_DANGER}; }}"
+            tactile_button_qss("ghost_danger", radius=4, padding="0 8px", font_size=11)
         )
         self.clear_btn.clicked.connect(lambda: self.clear_scoped_cards(confirm=True))
         ctrl_layout.addWidget(self.clear_btn)
@@ -610,9 +621,7 @@ class MappingCardsPanel(QFrame):
         self.export_btn.setFixedHeight(22)
         self.export_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.export_btn.setStyleSheet(
-            f"QPushButton {{ background-color: transparent; color: {TEXT_SECONDARY}; border: none; "
-            "border-radius: 4px; padding: 0 8px; font-size: 10.5px; font-weight: 600; }"
-            f"QPushButton:hover {{ background-color: #132A27; color: {ACCENT_CYAN}; }}"
+            tactile_button_qss("ghost", radius=4, padding="0 8px", font_size=10)
         )
         self.export_btn.clicked.connect(self.export_matrix_requested.emit)
         ctrl_layout.addWidget(self.export_btn)
@@ -621,9 +630,7 @@ class MappingCardsPanel(QFrame):
         self.import_btn.setFixedHeight(22)
         self.import_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.import_btn.setStyleSheet(
-            f"QPushButton {{ background-color: transparent; color: {TEXT_SECONDARY}; border: none; "
-            "border-radius: 4px; padding: 0 8px; font-size: 10.5px; font-weight: 600; }"
-            f"QPushButton:hover {{ background-color: #1E1630; color: {ACCENT_PURPLE}; }}"
+            tactile_button_qss("ghost", radius=4, padding="0 8px", font_size=10)
         )
         self.import_btn.clicked.connect(self.import_matrix_requested.emit)
         ctrl_layout.addWidget(self.import_btn)
@@ -642,14 +649,14 @@ class MappingCardsPanel(QFrame):
         header.addWidget(self.profile_filter_combo)
         layout.addLayout(header)
 
-        # ── Listen Mode 시안 점선/글로우 안내 배너 ────────────────────────────
+        # ── Listen Mode 광학 시안 점선 배너 ───────────────────────────────────
         self.listen_banner = QLabel(tr("ko", "matrix_listen_banner"))
         self.listen_banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.listen_banner.setFixedHeight(28)
         self.listen_banner.setStyleSheet(
-            f"background-color: #072622; color: {ACCENT_CYAN}; "
-            f"border: 1px dashed {ACCENT_CYAN}; border-radius: 6px; "
-            "font-size: 11px; font-weight: 700; letter-spacing: 0.3px;"
+            f"background-color: {ACCENT_CYAN_BG}; color: {ACCENT_CYAN}; "
+            f"border: 1px dashed {ACCENT_CYAN}; border-radius: 4px; "
+            f"font-family: {FONT_MONO}; font-size: 11px; font-weight: 700; letter-spacing: 0.3px;"
         )
         self.listen_banner.setVisible(False)
         layout.addWidget(self.listen_banner)
@@ -658,12 +665,12 @@ class MappingCardsPanel(QFrame):
         self.empty_hint = QLabel(tr("ko", "matrix_empty_hint"))
         self.empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty_hint.setStyleSheet(
-            f"color: {TEXT_MUTED}; font-size: 12px; padding: 38px; "
-            f"border: 1px dashed {BORDER_HAIRLINE}; border-radius: 8px; background-color: {BG_INPUT};"
+            f"color: {TEXT_MUTED}; font-size: 12px; padding: 36px; "
+            f"border: 1px dashed {BORDER_HAIRLINE}; border-radius: 6px; background-color: {BG_INSET};"
         )
         layout.addWidget(self.empty_hint)
 
-        # ── 2열 그리드 스크롤 영역 ────────────────────────────────────────────
+        # ── 2열 그리드 스크롤 영역 (카드 간 간격 12px) ────────────────────────
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -673,8 +680,8 @@ class MappingCardsPanel(QFrame):
         self.cards_container.setStyleSheet("background: transparent;")
         self.cards_layout = QGridLayout(self.cards_container)
         self.cards_layout.setContentsMargins(0, 0, 4, 0)
-        self.cards_layout.setHorizontalSpacing(10)
-        self.cards_layout.setVerticalSpacing(10)
+        self.cards_layout.setHorizontalSpacing(12)
+        self.cards_layout.setVerticalSpacing(12)
         self.cards_layout.setColumnStretch(0, 1)
         self.cards_layout.setColumnStretch(1, 1)
 
@@ -713,7 +720,7 @@ class MappingCardsPanel(QFrame):
         self._layer_buttons.clear()
 
         for idx, lyr in enumerate(self._layers, start=1):
-            btn = QPushButton(f"L{idx} · {lyr}")
+            btn = QPushButton(f"L{idx:02d} · {lyr}")
             btn.setCheckable(True)
             btn.setFixedHeight(22)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -738,11 +745,11 @@ class MappingCardsPanel(QFrame):
     def _apply_panel_border_style(self, listen_active: bool) -> None:
         if listen_active:
             self.setStyleSheet(
-                f"QFrame#CenterMappingPanel {{ background-color: #101719; "
-                f"border: 1.5px dashed {ACCENT_CYAN}; border-radius: 9px; }}"
+                f"QFrame#CenterMappingPanel {{ background-color: {BG_SURFACE}; "
+                f"border: 1px dashed {ACCENT_CYAN}; border-radius: 6px; }}"
             )
         else:
-            self.setStyleSheet(surface_panel_qss("CenterMappingPanel"))
+            self.setStyleSheet(surface_panel_qss("CenterMappingPanel", radius=6))
 
     def _update_listen_btn_style(self, active: bool) -> None:
         self._listen_active = active
@@ -751,18 +758,14 @@ class MappingCardsPanel(QFrame):
             self.listen_btn.setIconSize(QSize(11, 11))
             self.listen_btn.setText(tr(self._lang, "listen_on"))
             self.listen_btn.setStyleSheet(
-                f"QPushButton {{ background-color: #08302B; color: {ACCENT_CYAN}; "
-                f"border: 1px solid {ACCENT_CYAN}; border-radius: 4px; padding: 0 9px; "
-                "font-size: 11px; font-weight: 700; }"
+                tactile_button_qss("cyan", radius=4, padding="0 9px", font_size=11, bold=True)
             )
         else:
-            self.listen_btn.setIcon(make_vector_icon("record", TEXT_SECONDARY, 11))
+            self.listen_btn.setIcon(make_vector_icon("record", ACCENT_AMBER, 11))
             self.listen_btn.setIconSize(QSize(11, 11))
             self.listen_btn.setText(tr(self._lang, "listen_mode"))
             self.listen_btn.setStyleSheet(
-                f"QPushButton {{ background-color: transparent; color: {TEXT_PRIMARY}; border: none; "
-                "border-radius: 4px; padding: 0 9px; font-size: 11px; font-weight: 600; }"
-                f"QPushButton:hover {{ background-color: {BG_CARD}; color: {ACCENT_CYAN}; }}"
+                tactile_button_qss("ghost", radius=4, padding="0 9px", font_size=11)
             )
 
     def _sync_layer_tab_styles(self, active_layer: str) -> None:
@@ -773,15 +776,15 @@ class MappingCardsPanel(QFrame):
             btn.blockSignals(False)
             if is_active:
                 btn.setStyleSheet(
-                    f"QPushButton {{ background-color: #1C152E; color: {ACCENT_PURPLE}; "
-                    f"border: 1px solid {ACCENT_PURPLE}; border-radius: 4px; padding: 0 10px; "
-                    "font-size: 10px; font-weight: 800; }"
+                    f"QPushButton {{ background-color: {ACCENT_AMBER_BG}; color: {ACCENT_AMBER_GLOW}; "
+                    f"border: 1px solid {ACCENT_AMBER_BORDER}; border-radius: 4px; padding: 0 10px; "
+                    f"font-family: {FONT_MONO}; font-size: 10px; font-weight: 800; }}"
                 )
             else:
                 btn.setStyleSheet(
                     f"QPushButton {{ background-color: transparent; color: {TEXT_SECONDARY}; "
                     "border: none; border-radius: 4px; padding: 0 10px; "
-                    "font-size: 10px; font-weight: 600; }"
+                    f"font-family: {FONT_MONO}; font-size: 10px; font-weight: 600; }}"
                     f"QPushButton:hover {{ color: {TEXT_PRIMARY}; background-color: {BG_SURFACE}; }}"
                 )
 
@@ -953,10 +956,7 @@ class MappingCardsPanel(QFrame):
         profile: str = "*",
         layer: str = "default",
     ) -> MappingRule | None:
-        """Listen Mode에서 포착된 `InputEvent`에 대한 매핑 카드를 동적 생성 또는 점등한다.
-
-        키보드/마우스 등의 `release(up)` 이벤트는 카드 생성에서 제외한다.
-        """
+        """Listen Mode에서 포착된 `InputEvent`에 대한 매핑 카드를 동적 생성 또는 점등한다."""
         if event.is_release:
             return None
 
@@ -966,7 +966,7 @@ class MappingCardsPanel(QFrame):
                 and card.rule.profile == profile
                 and card.rule.layer == layer
             ):
-                card.trigger_glow(ACCENT_PURPLE)
+                card.trigger_glow(ACCENT_AMBER_GLOW)
                 return card.rule
 
         norm_type = normalize_binding_event_type(event.event_type)
@@ -999,7 +999,7 @@ class MappingCardsPanel(QFrame):
         return ActionSpec(ActionType.KEY_COMBO, {"combo": ""})
 
     def flash_card_for_rule(self, rule_id: str, color: str | None = None) -> bool:
-        """트리거된 규칙의 카드 테두리를 네온 글로우로 점등한다."""
+        """트리거된 규칙의 카드 테두리를 240ms 동안 점등한다."""
         card = self._cards.get(rule_id)
         if card is None:
             return False
@@ -1007,7 +1007,7 @@ class MappingCardsPanel(QFrame):
         return True
 
     def flash_matching_event(self, event: InputEvent) -> int:
-        """이벤트와 일치하는 모든 카드를 네온 글로우로 점등한다."""
+        """이벤트와 일치하는 모든 카드를 240ms 동안 점등한다."""
         flashed = 0
         ev_key = event.binding_key
         for card in self._cards.values():

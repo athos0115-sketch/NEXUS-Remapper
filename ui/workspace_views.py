@@ -1,10 +1,10 @@
-"""좌측 내비게이션 레일과 연동되는 5개 전용 워크스페이스 뷰 모듈 — Precision Architectural HUD (방향 A).
+"""좌측 내비게이션 레일과 연동되는 5개 전용 워크스페이스 뷰 모듈 — Obsidian Tactile HUD.
 
-`MappingCardsPanel`(`[MAPPING MATRIX]`)과 함께 `QStackedWidget`의 6개 화면을 구성한다:
+모든 색상·물성 스타일을 `ui/theme.py` 토큰에서 중앙 참조한다:
 - `[HARDWARE HUB]`: `DevicePanel` + 실시간 HID/키패드 신호 모니터
-- `[WORKSPACE PRESETS]`: 모니터 토폴로지, 스냅샷 캡처, 2D Blueprint 미니맵, 포커스 메인 앱, 프리셋 I/O
-- `[MAPPING LAYER]`: 무제한 레이어 생성/변경/삭제, 실행 중 `.exe` 바인딩, 레이어 `.json` I/O
-- `[SETTINGS]`: 슬라이드 `SettingToggleRow` 기반 엔진/DWM/시작프로그램/Bypass 설정, 백업/복원, 로그
+- `[WORKSPACE PRESETS]`: 모니터 토폴로지, 스냅샷 캡처, 2D 블루프린트 미니맵, 포커스 메인 앱, 프리셋 I/O
+- `[MAPPING LAYER]`: 무제한 레이어 CRUD, 실행 중 `.exe` 바인딩, 레이어 `.json` I/O
+- `[SETTINGS]`: 음각 LED `SettingToggleRow` 기반 엔진/DWM/시작프로그램/Bypass 설정, 백업/복원, 로그
 - `[READ ME]`: 3개 국어(`ko`/`ja`/`en`) 내장 사용 설명서 및 비상 탈출 가이드
 """
 
@@ -36,15 +36,18 @@ from core.window_orchestrator import LayoutPreset, MonitorInfo
 from ui.device_panel import DevicePanel
 from ui.i18n import LANGUAGE_LABELS, tr
 from ui.theme import (
+    ACCENT_AMBER,
     ACCENT_CYAN,
-    ACCENT_DANGER,
-    ACCENT_ORANGE,
-    ACCENT_PURPLE,
-    BG_CARD,
+    BG_BASE,
     BORDER_HAIRLINE,
+    FONT_MONO,
+    STATUS_OK,
+    STATUS_WARN,
     TEXT_PRIMARY,
     TEXT_SECONDARY,
+    section_header_qss,
     surface_panel_qss,
+    tactile_button_qss,
 )
 from ui.widgets import MonitorMinimapWidget, SettingToggleRow, make_vector_icon
 
@@ -56,34 +59,28 @@ class HardwareHubPage(QWidget):
         super().__init__()
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
+        layout.setSpacing(12)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.setHandleWidth(6)
+        splitter.setHandleWidth(8)
         splitter.addWidget(device_panel)
 
         monitor_frame = QFrame()
         monitor_frame.setObjectName("SignalMonitorPanel")
-        monitor_frame.setStyleSheet(surface_panel_qss("SignalMonitorPanel"))
+        monitor_frame.setStyleSheet(surface_panel_qss("SignalMonitorPanel", radius=6))
         m_layout = QVBoxLayout(monitor_frame)
-        m_layout.setContentsMargins(14, 12, 14, 12)
+        m_layout.setContentsMargins(16, 12, 16, 16)
         m_layout.setSpacing(8)
 
         hdr = QHBoxLayout()
         self.title_lbl = QLabel("REAL-TIME SIGNAL MONITOR")
-        self.title_lbl.setStyleSheet(
-            f"color: {TEXT_PRIMARY}; font-size: 11px; font-weight: 800; letter-spacing: 1.2px;"
-        )
+        self.title_lbl.setStyleSheet(section_header_qss())
         hdr.addWidget(self.title_lbl, 1)
 
         self.clear_btn = QPushButton("모니터 비우기")
         self.clear_btn.setFixedHeight(24)
         self.clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.clear_btn.setStyleSheet(
-            f"QPushButton {{ background-color: {BG_CARD}; color: {TEXT_SECONDARY}; "
-            f"border: 1px solid {BORDER_HAIRLINE}; border-radius: 5px; padding: 0 10px; font-size: 11px; }}"
-            f"QPushButton:hover {{ border-color: {ACCENT_CYAN}; color: {ACCENT_CYAN}; }}"
-        )
+        self.clear_btn.setStyleSheet(tactile_button_qss("default", radius=4, padding="0 10px"))
         hdr.addWidget(self.clear_btn)
         m_layout.addLayout(hdr)
 
@@ -144,22 +141,20 @@ class WorkspacePresetsPage(QWidget):
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(10)
+        root.setSpacing(12)
 
         # 상단: 토폴로지 감지 & 스냅샷 바
         topo_card = QFrame()
         topo_card.setObjectName("TopologyCard")
-        topo_card.setStyleSheet(surface_panel_qss("TopologyCard"))
+        topo_card.setStyleSheet(surface_panel_qss("TopologyCard", radius=6))
         t_layout = QVBoxLayout(topo_card)
-        t_layout.setContentsMargins(14, 12, 14, 12)
+        t_layout.setContentsMargins(16, 12, 16, 12)
         t_layout.setSpacing(8)
 
         t_top = QHBoxLayout()
         t_top.setSpacing(8)
         self.topo_title_lbl = QLabel("DISPLAY TOPOLOGY & SNAPSHOT")
-        self.topo_title_lbl.setStyleSheet(
-            f"color: {TEXT_PRIMARY}; font-size: 11px; font-weight: 800; letter-spacing: 1.2px;"
-        )
+        self.topo_title_lbl.setStyleSheet(section_header_qss())
         t_top.addWidget(self.topo_title_lbl)
         t_top.addStretch(1)
 
@@ -170,51 +165,46 @@ class WorkspacePresetsPage(QWidget):
         t_top.addWidget(self.topology_combo)
 
         self.snapshot_btn = QPushButton("현재 창 배치 스냅샷 저장")
-        self.snapshot_btn.setIcon(make_vector_icon("snapshot", ACCENT_CYAN, 14))
+        self.snapshot_btn.setIcon(make_vector_icon("snapshot", BG_BASE, 14))
         self.snapshot_btn.setIconSize(QSize(14, 14))
         self.snapshot_btn.setFixedHeight(28)
         self.snapshot_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.snapshot_btn.setStyleSheet(
-            f"QPushButton {{ background-color: #0B2623; color: {ACCENT_CYAN}; border: 1px solid #1C5E55; "
-            "border-radius: 6px; padding: 0 12px; font-size: 11px; font-weight: 700; }"
-            f"QPushButton:hover {{ border-color: {ACCENT_CYAN}; background-color: #103531; }}"
+            tactile_button_qss("amber_solid", radius=4, padding="0 12px", bold=True)
         )
         self.snapshot_btn.clicked.connect(self.snapshot_requested.emit)
         t_top.addWidget(self.snapshot_btn)
         t_layout.addLayout(t_top)
 
-        self.monitors_summary_lbl = QLabel("모니터 감지 중...")
+        self.monitors_summary_lbl = QLabel("TOPOLOGY SCANNING...")
         self.monitors_summary_lbl.setStyleSheet(
-            f"color: {TEXT_SECONDARY}; font-family: 'Consolas', 'Malgun Gothic', monospace; font-size: 10.5px;"
+            f"color: {ACCENT_CYAN}; font-family: {FONT_MONO}; font-size: 10.5px;"
         )
         t_layout.addWidget(self.monitors_summary_lbl)
         root.addWidget(topo_card)
 
         # 하단: 좌측 프리셋 목록 / 우측 2D 미니맵 + 상세
         body_split = QSplitter(Qt.Orientation.Horizontal)
-        body_split.setHandleWidth(6)
+        body_split.setHandleWidth(8)
 
         list_card = QFrame()
         list_card.setObjectName("PresetListCard")
-        list_card.setStyleSheet(surface_panel_qss("PresetListCard"))
+        list_card.setStyleSheet(surface_panel_qss("PresetListCard", radius=6))
         l_layout = QVBoxLayout(list_card)
-        l_layout.setContentsMargins(14, 12, 14, 12)
+        l_layout.setContentsMargins(16, 12, 16, 16)
         l_layout.setSpacing(8)
 
         l_hdr = QHBoxLayout()
+        l_hdr.setSpacing(6)
         self.presets_title_lbl = QLabel("SAVED LAYOUT PRESETS")
-        self.presets_title_lbl.setStyleSheet(
-            f"color: {TEXT_PRIMARY}; font-size: 11px; font-weight: 800; letter-spacing: 1.2px;"
-        )
+        self.presets_title_lbl.setStyleSheet(section_header_qss())
         l_hdr.addWidget(self.presets_title_lbl, 1)
 
         self.export_presets_btn = QPushButton("내보내기(.json)")
         self.export_presets_btn.setFixedHeight(24)
         self.export_presets_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.export_presets_btn.setStyleSheet(
-            f"QPushButton {{ background-color: {BG_CARD}; color: {TEXT_SECONDARY}; "
-            f"border: 1px solid {BORDER_HAIRLINE}; border-radius: 5px; padding: 0 8px; font-size: 10.5px; }}"
-            f"QPushButton:hover {{ border-color: {ACCENT_CYAN}; color: {ACCENT_CYAN}; }}"
+            tactile_button_qss("default", radius=4, padding="0 8px", font_size=10)
         )
         self.export_presets_btn.clicked.connect(self.export_presets_requested.emit)
         l_hdr.addWidget(self.export_presets_btn)
@@ -223,9 +213,7 @@ class WorkspacePresetsPage(QWidget):
         self.import_presets_btn.setFixedHeight(24)
         self.import_presets_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.import_presets_btn.setStyleSheet(
-            f"QPushButton {{ background-color: {BG_CARD}; color: {TEXT_SECONDARY}; "
-            f"border: 1px solid {BORDER_HAIRLINE}; border-radius: 5px; padding: 0 8px; font-size: 10.5px; }}"
-            f"QPushButton:hover {{ border-color: {ACCENT_PURPLE}; color: {ACCENT_PURPLE}; }}"
+            tactile_button_qss("default", radius=4, padding="0 8px", font_size=10)
         )
         self.import_presets_btn.clicked.connect(self.import_presets_requested.emit)
         l_hdr.addWidget(self.import_presets_btn)
@@ -239,21 +227,19 @@ class WorkspacePresetsPage(QWidget):
         self.auto_launch_chk = SettingToggleRow(
             text="미실행 앱 자동 실행 후 정렬",
             checked=initial_auto_launch,
-            active_color=ACCENT_PURPLE,
+            active_color=ACCENT_AMBER,
             label_color=TEXT_SECONDARY,
         )
         self.auto_launch_chk.toggled.connect(self.auto_launch_toggled.emit)
         l_layout.addWidget(self.auto_launch_chk)
 
         btn_row = QHBoxLayout()
-        btn_row.setSpacing(6)
+        btn_row.setSpacing(8)
         self.apply_preset_btn = QPushButton("선택 레이아웃 즉시 적용")
         self.apply_preset_btn.setFixedHeight(28)
         self.apply_preset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.apply_preset_btn.setStyleSheet(
-            f"QPushButton {{ background-color: #1E1430; color: {ACCENT_PURPLE}; border: 1px solid #5B21B6; "
-            "border-radius: 5px; font-size: 11px; font-weight: 700; }"
-            f"QPushButton:hover {{ border-color: {ACCENT_PURPLE}; background-color: #281B40; }}"
+            tactile_button_qss("amber", radius=4, padding="0 12px", bold=True)
         )
         self.apply_preset_btn.clicked.connect(self._emit_apply)
         btn_row.addWidget(self.apply_preset_btn, 1)
@@ -262,9 +248,7 @@ class WorkspacePresetsPage(QWidget):
         self.del_preset_btn.setFixedHeight(28)
         self.del_preset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.del_preset_btn.setStyleSheet(
-            f"QPushButton {{ background-color: #211619; color: {ACCENT_DANGER}; border: 1px solid #4B2329; "
-            "border-radius: 5px; padding: 0 12px; font-size: 11px; }"
-            f"QPushButton:hover {{ border-color: {ACCENT_DANGER}; }}"
+            tactile_button_qss("danger", radius=4, padding="0 12px")
         )
         self.del_preset_btn.clicked.connect(self._emit_delete)
         btn_row.addWidget(self.del_preset_btn)
@@ -274,22 +258,20 @@ class WorkspacePresetsPage(QWidget):
         # 우측 프리셋 상세 + 2D 아키텍처 미니맵 카드
         detail_card = QFrame()
         detail_card.setObjectName("PresetDetailCard")
-        detail_card.setStyleSheet(surface_panel_qss("PresetDetailCard"))
+        detail_card.setStyleSheet(surface_panel_qss("PresetDetailCard", radius=6))
         d_layout = QVBoxLayout(detail_card)
-        d_layout.setContentsMargins(14, 12, 14, 12)
+        d_layout.setContentsMargins(16, 12, 16, 16)
         d_layout.setSpacing(8)
 
         self.inspector_title_lbl = QLabel("PRESET INSPECTOR & 2D BLUEPRINT")
-        self.inspector_title_lbl.setStyleSheet(
-            f"color: {TEXT_PRIMARY}; font-size: 11px; font-weight: 800; letter-spacing: 1.2px;"
-        )
+        self.inspector_title_lbl.setStyleSheet(section_header_qss())
         d_layout.addWidget(self.inspector_title_lbl)
 
-        # 2D 비율 미니맵 (실시간 모니터 + 창 배치 블록 시각화)
         self.minimap = MonitorMinimapWidget()
         d_layout.addWidget(self.minimap)
 
         focus_row = QHBoxLayout()
+        focus_row.setSpacing(8)
         self.focus_lbl = QLabel("정렬 후 최종 포커스 메인 앱:")
         self.focus_lbl.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px;")
         focus_row.addWidget(self.focus_lbl)
@@ -328,7 +310,7 @@ class WorkspacePresetsPage(QWidget):
     def set_monitors_summary(self, monitors: list[MonitorInfo], fingerprint: str) -> None:
         self._monitors = list(monitors)
         desc = " | ".join(
-            f"M{m.index}: {m.width}x{m.height}@{m.scale_percent}% rcWork={m.work_rect}"
+            f"M{m.index}: {m.width}×{m.height}@{m.scale_percent}% rcWork={m.work_rect}"
             for m in monitors
         )
         self.monitors_summary_lbl.setText(f"TOPOLOGY [{fingerprint}] — {desc}")
@@ -455,23 +437,21 @@ class MappingLayerPage(QWidget):
         super().__init__()
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
+        layout.setSpacing(12)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.setHandleWidth(6)
+        splitter.setHandleWidth(8)
 
         # 좌측: 레이어 목록 & 생성/이름변경/삭제/I/O
         left_card = QFrame()
         left_card.setObjectName("LayerListCard")
-        left_card.setStyleSheet(surface_panel_qss("LayerListCard"))
+        left_card.setStyleSheet(surface_panel_qss("LayerListCard", radius=6))
         l_layout = QVBoxLayout(left_card)
-        l_layout.setContentsMargins(14, 12, 14, 12)
+        l_layout.setContentsMargins(16, 12, 16, 16)
         l_layout.setSpacing(8)
 
         self.l_title_lbl = QLabel("CUSTOM LAYERS")
-        self.l_title_lbl.setStyleSheet(
-            f"color: {TEXT_PRIMARY}; font-size: 11px; font-weight: 800; letter-spacing: 1.2px;"
-        )
+        self.l_title_lbl.setStyleSheet(section_header_qss())
         l_layout.addWidget(self.l_title_lbl)
 
         self.layer_list = QListWidget()
@@ -484,9 +464,7 @@ class MappingLayerPage(QWidget):
         self.add_layer_btn.setFixedHeight(28)
         self.add_layer_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.add_layer_btn.setStyleSheet(
-            f"QPushButton {{ background-color: #0B2623; color: {ACCENT_CYAN}; border: 1px solid #1C5E55; "
-            "border-radius: 5px; font-size: 11px; font-weight: 700; }"
-            f"QPushButton:hover {{ border-color: {ACCENT_CYAN}; }}"
+            tactile_button_qss("amber", radius=4, padding="0 10px", bold=True)
         )
         self.add_layer_btn.clicked.connect(self._on_add_layer)
         crud_row.addWidget(self.add_layer_btn, 1)
@@ -495,9 +473,7 @@ class MappingLayerPage(QWidget):
         self.rename_layer_btn.setFixedHeight(28)
         self.rename_layer_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.rename_layer_btn.setStyleSheet(
-            f"QPushButton {{ background-color: {BG_CARD}; color: {TEXT_PRIMARY}; "
-            f"border: 1px solid {BORDER_HAIRLINE}; border-radius: 5px; padding: 0 10px; font-size: 11px; }}"
-            f"QPushButton:hover {{ border-color: {ACCENT_PURPLE}; }}"
+            tactile_button_qss("default", radius=4, padding="0 10px")
         )
         self.rename_layer_btn.clicked.connect(self._on_rename_layer)
         crud_row.addWidget(self.rename_layer_btn)
@@ -506,9 +482,7 @@ class MappingLayerPage(QWidget):
         self.del_layer_btn.setFixedHeight(28)
         self.del_layer_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.del_layer_btn.setStyleSheet(
-            f"QPushButton {{ background-color: #211619; color: {ACCENT_DANGER}; border: 1px solid #4B2329; "
-            "border-radius: 5px; padding: 0 10px; font-size: 11px; }"
-            f"QPushButton:hover {{ border-color: {ACCENT_DANGER}; }}"
+            tactile_button_qss("danger", radius=4, padding="0 10px")
         )
         self.del_layer_btn.clicked.connect(self._on_delete_layer)
         crud_row.addWidget(self.del_layer_btn)
@@ -520,9 +494,7 @@ class MappingLayerPage(QWidget):
         self.export_layer_btn.setFixedHeight(26)
         self.export_layer_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.export_layer_btn.setStyleSheet(
-            f"QPushButton {{ background-color: {BG_CARD}; color: {TEXT_SECONDARY}; "
-            f"border: 1px solid {BORDER_HAIRLINE}; border-radius: 5px; font-size: 10.5px; }}"
-            f"QPushButton:hover {{ border-color: {ACCENT_CYAN}; color: {ACCENT_CYAN}; }}"
+            tactile_button_qss("default", radius=4, padding="0 8px", font_size=10)
         )
         self.export_layer_btn.clicked.connect(self._on_export_layer)
         io_row.addWidget(self.export_layer_btn, 1)
@@ -531,9 +503,7 @@ class MappingLayerPage(QWidget):
         self.import_layer_btn.setFixedHeight(26)
         self.import_layer_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.import_layer_btn.setStyleSheet(
-            f"QPushButton {{ background-color: {BG_CARD}; color: {TEXT_SECONDARY}; "
-            f"border: 1px solid {BORDER_HAIRLINE}; border-radius: 5px; font-size: 10.5px; }}"
-            f"QPushButton:hover {{ border-color: {ACCENT_PURPLE}; color: {ACCENT_PURPLE}; }}"
+            tactile_button_qss("default", radius=4, padding="0 8px", font_size=10)
         )
         self.import_layer_btn.clicked.connect(self.import_layer_requested.emit)
         io_row.addWidget(self.import_layer_btn, 1)
@@ -543,15 +513,13 @@ class MappingLayerPage(QWidget):
         # 우측: 선택 레이어에 .exe 프로세스 바인딩
         right_card = QFrame()
         right_card.setObjectName("LayerProcessBindCard")
-        right_card.setStyleSheet(surface_panel_qss("LayerProcessBindCard"))
+        right_card.setStyleSheet(surface_panel_qss("LayerProcessBindCard", radius=6))
         r_layout = QVBoxLayout(right_card)
-        r_layout.setContentsMargins(14, 12, 14, 12)
+        r_layout.setContentsMargins(16, 12, 16, 16)
         r_layout.setSpacing(8)
 
         self.bind_title_lbl = QLabel("AUTO-SWITCH PROCESS BINDING (.exe)")
-        self.bind_title_lbl.setStyleSheet(
-            f"color: {TEXT_PRIMARY}; font-size: 11px; font-weight: 800; letter-spacing: 1.2px;"
-        )
+        self.bind_title_lbl.setStyleSheet(section_header_qss())
         r_layout.addWidget(self.bind_title_lbl)
 
         self.bind_hint_lbl = QLabel(tr("ko", "layer_bind_hint"))
@@ -560,12 +528,13 @@ class MappingLayerPage(QWidget):
         r_layout.addWidget(self.bind_hint_lbl)
 
         cols = QHBoxLayout()
-        cols.setSpacing(10)
+        cols.setSpacing(12)
 
         bound_col = QVBoxLayout()
+        bound_col.setSpacing(6)
         self.bound_lbl = QLabel("바인딩된 프로세스 (.exe)")
         self.bound_lbl.setStyleSheet(
-            f"color: {ACCENT_CYAN}; font-size: 11px; font-weight: 700;"
+            f"color: {ACCENT_AMBER}; font-size: 11px; font-weight: 700;"
         )
         bound_col.addWidget(self.bound_lbl)
 
@@ -573,6 +542,7 @@ class MappingLayerPage(QWidget):
         bound_col.addWidget(self.bound_proc_list, 1)
 
         manual_row = QHBoxLayout()
+        manual_row.setSpacing(6)
         self.manual_exe_edit = QLineEdit()
         self.manual_exe_edit.setPlaceholderText("Revit.exe, acad.exe")
         manual_row.addWidget(self.manual_exe_edit, 1)
@@ -581,8 +551,7 @@ class MappingLayerPage(QWidget):
         self.add_exe_btn.setFixedHeight(26)
         self.add_exe_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.add_exe_btn.setStyleSheet(
-            f"QPushButton {{ background-color: #0B2623; color: {ACCENT_CYAN}; border: 1px solid #1C5E55; "
-            "border-radius: 5px; padding: 0 10px; font-size: 11px; font-weight: 700; }"
+            tactile_button_qss("amber", radius=4, padding="0 10px", bold=True)
         )
         self.add_exe_btn.clicked.connect(self._on_add_manual_exe)
         manual_row.addWidget(self.add_exe_btn)
@@ -591,8 +560,7 @@ class MappingLayerPage(QWidget):
         self.rem_exe_btn.setFixedHeight(26)
         self.rem_exe_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.rem_exe_btn.setStyleSheet(
-            f"QPushButton {{ background-color: #211619; color: {ACCENT_DANGER}; border: 1px solid #4B2329; "
-            "border-radius: 5px; padding: 0 10px; font-size: 11px; }"
+            tactile_button_qss("danger", radius=4, padding="0 10px")
         )
         self.rem_exe_btn.clicked.connect(self._on_remove_selected_exe)
         manual_row.addWidget(self.rem_exe_btn)
@@ -600,10 +568,11 @@ class MappingLayerPage(QWidget):
         cols.addLayout(bound_col, 1)
 
         run_col = QVBoxLayout()
+        run_col.setSpacing(6)
         run_hdr = QHBoxLayout()
         self.run_lbl = QLabel("현재 실행 중인 프로세스")
         self.run_lbl.setStyleSheet(
-            f"color: {ACCENT_PURPLE}; font-size: 11px; font-weight: 700;"
+            f"color: {ACCENT_CYAN}; font-size: 11px; font-weight: 700;"
         )
         run_hdr.addWidget(self.run_lbl, 1)
 
@@ -611,9 +580,7 @@ class MappingLayerPage(QWidget):
         self.refresh_proc_btn.setFixedHeight(22)
         self.refresh_proc_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.refresh_proc_btn.setStyleSheet(
-            f"QPushButton {{ background-color: {BG_CARD}; color: {TEXT_SECONDARY}; "
-            f"border: 1px solid {BORDER_HAIRLINE}; border-radius: 4px; padding: 0 8px; font-size: 10px; }}"
-            f"QPushButton:hover {{ border-color: {ACCENT_PURPLE}; color: {ACCENT_PURPLE}; }}"
+            tactile_button_qss("default", radius=4, padding="0 8px", font_size=10)
         )
         self.refresh_proc_btn.clicked.connect(self.refresh_running_processes)
         run_hdr.addWidget(self.refresh_proc_btn)
@@ -627,9 +594,7 @@ class MappingLayerPage(QWidget):
         self.bind_btn.setFixedHeight(26)
         self.bind_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.bind_btn.setStyleSheet(
-            f"QPushButton {{ background-color: #1E1430; color: {ACCENT_PURPLE}; border: 1px solid #5B21B6; "
-            "border-radius: 5px; font-size: 11px; font-weight: 700; }"
-            f"QPushButton:hover {{ border-color: {ACCENT_PURPLE}; }}"
+            tactile_button_qss("amber", radius=4, padding="0 10px", bold=True)
         )
         self.bind_btn.clicked.connect(self._on_bind_running_exe)
         run_col.addWidget(self.bind_btn)
@@ -785,7 +750,7 @@ class MappingLayerPage(QWidget):
 
 
 class SettingsPage(QWidget):
-    """[SETTINGS]: 슬라이드 토글 기반 엔진/DWM/시작프로그램/Bypass/백업·복원/다국어."""
+    """[SETTINGS]: 음각 LED 토글 기반 엔진/DWM/시작프로그램/Bypass/백업·복원/다국어."""
 
     prefer_kernel_toggled = pyqtSignal(bool)
     minimize_tray_toggled = pyqtSignal(bool)
@@ -816,20 +781,18 @@ class SettingsPage(QWidget):
         self._lang = language if language in LANGUAGE_LABELS else "ko"
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(10)
+        root.setSpacing(12)
 
         cfg_card = QFrame()
         cfg_card.setObjectName("SettingsCard")
-        cfg_card.setStyleSheet(surface_panel_qss("SettingsCard"))
+        cfg_card.setStyleSheet(surface_panel_qss("SettingsCard", radius=6))
         c_layout = QVBoxLayout(cfg_card)
-        c_layout.setContentsMargins(16, 14, 16, 14)
+        c_layout.setContentsMargins(16, 12, 16, 16)
         c_layout.setSpacing(6)
 
         top_bar = QHBoxLayout()
         self.title_lbl = QLabel()
-        self.title_lbl.setStyleSheet(
-            f"color: {TEXT_PRIMARY}; font-size: 11px; font-weight: 800; letter-spacing: 1.2px;"
-        )
+        self.title_lbl.setStyleSheet(section_header_qss())
         top_bar.addWidget(self.title_lbl, 1)
 
         self.lang_lbl = QLabel()
@@ -847,19 +810,19 @@ class SettingsPage(QWidget):
         c_layout.addLayout(top_bar)
 
         self.prefer_kernel_chk = SettingToggleRow(
-            checked=prefer_kernel, active_color=ACCENT_CYAN
+            checked=prefer_kernel, active_color=STATUS_OK
         )
         self.prefer_kernel_chk.toggled.connect(self.prefer_kernel_toggled.emit)
         c_layout.addWidget(self.prefer_kernel_chk)
 
         self.minimize_tray_chk = SettingToggleRow(
-            checked=minimize_tray, active_color=ACCENT_CYAN
+            checked=minimize_tray, active_color=ACCENT_AMBER
         )
         self.minimize_tray_chk.toggled.connect(self.minimize_tray_toggled.emit)
         c_layout.addWidget(self.minimize_tray_chk)
 
         self.auto_switch_layer_chk = SettingToggleRow(
-            checked=auto_switch_layer, active_color=ACCENT_PURPLE
+            checked=auto_switch_layer, active_color=ACCENT_CYAN
         )
         self.auto_switch_layer_chk.toggled.connect(self.auto_switch_layer_toggled.emit)
         c_layout.addWidget(self.auto_switch_layer_chk)
@@ -871,19 +834,19 @@ class SettingsPage(QWidget):
         c_layout.addWidget(self.compensate_dwm_chk)
 
         self.run_at_startup_chk = SettingToggleRow(
-            checked=run_at_startup, active_color=ACCENT_CYAN, label_color=ACCENT_CYAN
+            checked=run_at_startup, active_color=ACCENT_AMBER, label_color=TEXT_PRIMARY
         )
         self.run_at_startup_chk.toggled.connect(self.run_at_startup_toggled.emit)
         c_layout.addWidget(self.run_at_startup_chk)
 
         self.start_minimized_chk = SettingToggleRow(
-            checked=start_minimized, active_color=ACCENT_PURPLE, label_color=ACCENT_PURPLE
+            checked=start_minimized, active_color=ACCENT_AMBER, label_color=TEXT_SECONDARY
         )
         self.start_minimized_chk.toggled.connect(self.start_minimized_toggled.emit)
         c_layout.addWidget(self.start_minimized_chk)
 
         self.bypass_chk = SettingToggleRow(
-            checked=bypass_remapping, active_color=ACCENT_ORANGE, label_color=ACCENT_ORANGE
+            checked=bypass_remapping, active_color=STATUS_WARN, label_color=STATUS_WARN
         )
         self.bypass_chk.toggled.connect(self.bypass_toggled.emit)
         c_layout.addWidget(self.bypass_chk)
@@ -904,15 +867,12 @@ class SettingsPage(QWidget):
         path_row.addWidget(self.config_path_edit, 1)
 
         self.open_dir_btn = QPushButton()
-        self.open_dir_btn.setIcon(make_vector_icon("folder", ACCENT_CYAN, 13))
+        self.open_dir_btn.setIcon(make_vector_icon("folder", ACCENT_AMBER, 13))
         self.open_dir_btn.setIconSize(QSize(13, 13))
         self.open_dir_btn.setFixedHeight(28)
         self.open_dir_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.open_dir_btn.setStyleSheet(
-            f"QPushButton {{ background-color: {BG_CARD}; color: {ACCENT_CYAN}; "
-            f"border: 1px solid {BORDER_HAIRLINE}; border-radius: 5px; padding: 0 10px; "
-            "font-size: 11px; font-weight: 700; }"
-            f"QPushButton:hover {{ border-color: {ACCENT_CYAN}; }}"
+            tactile_button_qss("default", radius=4, padding="0 10px", bold=True)
         )
         self.open_dir_btn.clicked.connect(self.open_config_folder_requested.emit)
         path_row.addWidget(self.open_dir_btn)
@@ -921,10 +881,7 @@ class SettingsPage(QWidget):
         self.backup_config_btn.setFixedHeight(28)
         self.backup_config_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.backup_config_btn.setStyleSheet(
-            f"QPushButton {{ background-color: {BG_CARD}; color: {TEXT_PRIMARY}; "
-            f"border: 1px solid {BORDER_HAIRLINE}; border-radius: 5px; padding: 0 10px; "
-            "font-size: 11px; font-weight: 600; }"
-            f"QPushButton:hover {{ border-color: {ACCENT_CYAN}; color: {ACCENT_CYAN}; }}"
+            tactile_button_qss("default", radius=4, padding="0 10px")
         )
         self.backup_config_btn.clicked.connect(self.backup_config_requested.emit)
         path_row.addWidget(self.backup_config_btn)
@@ -933,10 +890,7 @@ class SettingsPage(QWidget):
         self.restore_config_btn.setFixedHeight(28)
         self.restore_config_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.restore_config_btn.setStyleSheet(
-            f"QPushButton {{ background-color: {BG_CARD}; color: {TEXT_PRIMARY}; "
-            f"border: 1px solid {BORDER_HAIRLINE}; border-radius: 5px; padding: 0 10px; "
-            "font-size: 11px; font-weight: 600; }"
-            f"QPushButton:hover {{ border-color: {ACCENT_PURPLE}; color: {ACCENT_PURPLE}; }}"
+            tactile_button_qss("default", radius=4, padding="0 10px")
         )
         self.restore_config_btn.clicked.connect(self.restore_config_requested.emit)
         path_row.addWidget(self.restore_config_btn)
@@ -945,9 +899,7 @@ class SettingsPage(QWidget):
         self.save_btn.setFixedHeight(28)
         self.save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.save_btn.setStyleSheet(
-            f"QPushButton {{ background-color: #1E1430; color: {ACCENT_PURPLE}; border: 1px solid #5B21B6; "
-            "border-radius: 5px; padding: 0 10px; font-size: 11px; font-weight: 700; }"
-            f"QPushButton:hover {{ border-color: {ACCENT_PURPLE}; }}"
+            tactile_button_qss("amber_solid", radius=4, padding="0 12px", bold=True)
         )
         self.save_btn.clicked.connect(self.save_now_requested.emit)
         path_row.addWidget(self.save_btn)
@@ -956,15 +908,13 @@ class SettingsPage(QWidget):
 
         log_card = QFrame()
         log_card.setObjectName("SettingsLogCard")
-        log_card.setStyleSheet(surface_panel_qss("SettingsLogCard"))
+        log_card.setStyleSheet(surface_panel_qss("SettingsLogCard", radius=6))
         l_layout = QVBoxLayout(log_card)
-        l_layout.setContentsMargins(16, 12, 16, 12)
+        l_layout.setContentsMargins(16, 12, 16, 16)
         l_layout.setSpacing(8)
 
         self.log_hdr = QLabel()
-        self.log_hdr.setStyleSheet(
-            f"color: {TEXT_PRIMARY}; font-size: 11px; font-weight: 800; letter-spacing: 1.2px;"
-        )
+        self.log_hdr.setStyleSheet(section_header_qss())
         l_layout.addWidget(self.log_hdr)
 
         self.log_view = QPlainTextEdit()
@@ -1038,9 +988,9 @@ class ReadMePage(QWidget):
 
         card = QFrame()
         card.setObjectName("ReadMeCard")
-        card.setStyleSheet(surface_panel_qss("ReadMeCard"))
+        card.setStyleSheet(surface_panel_qss("ReadMeCard", radius=6))
         c_layout = QVBoxLayout(card)
-        c_layout.setContentsMargins(16, 14, 16, 14)
+        c_layout.setContentsMargins(16, 16, 16, 16)
 
         self.browser = QTextBrowser()
         self.browser.setOpenExternalLinks(False)

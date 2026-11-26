@@ -88,6 +88,7 @@ from core.context_watcher import ContextWatcher  # noqa: E402
 from core.device_registry import DeviceRegistry  # noqa: E402
 from core.engine_manager import EngineManager  # noqa: E402
 from ui.main_window import MainWindow, NexusSignalBridge  # noqa: E402
+from ui.theme import apply_dpi_and_fonts, load_app_icon  # noqa: E402
 
 
 def build_application(
@@ -133,14 +134,19 @@ def build_application(
 
     context_watcher = ContextWatcher(
         process_profiles=cfg.get("process_profiles"),
-        layer_bindings=config_store.get_layer_bindings(),
+        layer_bindings=config_store.get_focus_layer_bindings(),
+        process_layer_bindings=config_store.get_process_layer_bindings(),
         ignore_self=not test_mode,
     )
     engine_manager = EngineManager(registry=registry)
 
     app = QApplication.instance() or QApplication(sys.argv)
+    apply_dpi_and_fonts(app)
     app.setApplicationName("NEXUS Remapper")
     app.setQuitOnLastWindowClosed(False)
+    app_icon = load_app_icon()
+    if not app_icon.isNull():
+        app.setWindowIcon(app_icon)
 
     bridge = NexusSignalBridge()
     window = MainWindow(

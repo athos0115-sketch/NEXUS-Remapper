@@ -1,7 +1,7 @@
-"""좌측 연결 장치 패널 — Obsidian Tactile HUD 스타일.
+"""좌측 연결 장치 패널 — Darkroom Filament v1.1 (Quiet Pro) 스타일.
 
-모든 색상·물성 스타일을 `ui/theme.py` 토큰에서 참조하며,
-1.5px 모노라인 벡터 아이콘, 돌출(Raised) 장치 카드, 별칭 편집 및 보호 잠금 토글을 제공한다.
+컴포넌트 내 인라인 `setStyleSheet` 및 raw HEX 하드코딩 0건을 유지하며,
+QSS 역할 속성(`surfaceRole`, `btnRole`, `pillState`)과 `EmberCoreDot`으로 상태를 표현한다.
 """
 
 from __future__ import annotations
@@ -22,35 +22,12 @@ from PyQt6.QtWidgets import (
 from core.device_registry import DeviceInfo
 from core.events import DeviceType
 from ui.i18n import tr
-from ui.theme import (
-    ACCENT_AMBER,
-    ACCENT_CYAN,
-    ACCENT_CYAN_BG,
-    ACCENT_CYAN_BORDER,
-    BG_INSET,
-    BORDER_HAIRLINE,
-    FONT_MONO,
-    STATUS_OK,
-    STATUS_OK_BG,
-    STATUS_OK_BORDER,
-    STATUS_WARN,
-    STATUS_WARN_BG,
-    STATUS_WARN_BORDER,
-    TEXT_MUTED,
-    TEXT_PRIMARY,
-    TEXT_SECONDARY,
-    badge_qss,
-    inset_slot_qss,
-    raised_card_qss,
-    section_header_qss,
-    surface_panel_qss,
-    tactile_button_qss,
-)
-from ui.widgets import make_vector_icon
+from ui.theme import repolish
+from ui.widgets import DarkroomSurfaceCard, EmberCoreDot, make_vector_icon
 
 
 class DeviceItemWidget(QFrame):
-    """개별 HID/입력 장치 돌출(Raised) 카드 위젯."""
+    """개별 HID/입력 장치 카드 위젯 (Darkroom 스페큘러 헤어라인 + Ember 상태 도트)."""
 
     clicked = pyqtSignal(str)
     protection_toggled = pyqtSignal(str, bool)
@@ -60,29 +37,27 @@ class DeviceItemWidget(QFrame):
         super().__init__()
         self.device = device
         self._selected = selected
-        self.setObjectName("DeviceItemCard")
+        self.setProperty("surfaceRole", "device-card")
+        self.setProperty("selected", selected)
+        self.setProperty("registered", bool(device.is_registered and not device.protected))
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
         root = QHBoxLayout(self)
-        root.setContentsMargins(12, 8, 12, 8)
+        root.setContentsMargins(12, 10, 12, 10)
         root.setSpacing(10)
 
-        # 좌측 음각 슬롯 내부 1.5px 모노라인 벡터 아이콘
-        icon_kind, accent_hex = self._device_icon_meta(device.device_type)
+        icon_kind, icon_token = self._device_icon_meta(device.device_type)
         icon_slot = QFrame()
-        icon_slot.setObjectName("DeviceIconSlot")
+        icon_slot.setProperty("surfaceRole", "keycap-slot")
         icon_slot.setFixedSize(32, 32)
-        icon_slot.setStyleSheet(inset_slot_qss("DeviceIconSlot", radius=4))
         ic_lay = QHBoxLayout(icon_slot)
         ic_lay.setContentsMargins(0, 0, 0, 0)
         icon_lbl = QLabel()
         icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon_lbl.setPixmap(make_vector_icon(icon_kind, accent_hex, 17).pixmap(QSize(17, 17)))
-        icon_lbl.setStyleSheet("border: none; background: transparent;")
+        icon_lbl.setPixmap(make_vector_icon(icon_kind, icon_token, 16).pixmap(QSize(16, 16)))
         ic_lay.addWidget(icon_lbl)
         root.addWidget(icon_slot)
 
-        # 중앙 정보 영역
         info_col = QVBoxLayout()
         info_col.setContentsMargins(0, 0, 0, 0)
         info_col.setSpacing(4)
@@ -90,53 +65,36 @@ class DeviceItemWidget(QFrame):
         top_row = QHBoxLayout()
         top_row.setSpacing(6)
 
-        status_dot = QLabel()
-        status_dot.setFixedSize(6, 6)
         if device.protected:
-            dot_color = STATUS_WARN
-            status_dot.setToolTip("Protected (입력 보호 잠금)")
+            dot = EmberCoreDot(live=False, tone="orange", size=12)
+            dot.setToolTip("Protected (입력 보호 잠금)")
         elif device.is_registered and device.is_connected:
-            dot_color = STATUS_OK
-            status_dot.setToolTip("Active Auxiliary (리매핑 활성)")
+            dot = EmberCoreDot(live=True, tone="gold", size=12)
+            dot.setToolTip("Active Auxiliary (리매핑 활성)")
         elif device.is_connected:
-            dot_color = ACCENT_CYAN
-            status_dot.setToolTip("Auxiliary Standby (대기 중)")
+            dot = EmberCoreDot(live=False, tone="muted", size=12)
+            dot.setToolTip("Auxiliary Standby (대기 중)")
         else:
-            dot_color = TEXT_MUTED
-            status_dot.setToolTip("Offline")
-        status_dot.setStyleSheet(
-            f"background-color: {dot_color}; border-radius: 3px; border: none;"
-        )
-        top_row.addWidget(status_dot)
+            dot = EmberCoreDot(live=False, tone="muted", size=12)
+            dot.setToolTip("Offline")
+        top_row.addWidget(dot)
 
         self.name_lbl = QLabel(device.display_name)
-        self.name_lbl.setStyleSheet(
-            f"color: {TEXT_PRIMARY}; font-weight: 600; font-size: 12px; border: none; background: transparent;"
-        )
+        self.name_lbl.setProperty("role", "body")
         top_row.addWidget(self.name_lbl, 1)
 
-        # 인라인 별칭 편집 버튼
         self.edit_alias_btn = QPushButton()
-        self.edit_alias_btn.setIcon(make_vector_icon("edit", TEXT_SECONDARY, 12))
+        self.edit_alias_btn.setProperty("btnRole", "quiet")
+        self.edit_alias_btn.setIcon(make_vector_icon("edit", "--text-secondary", 12))
         self.edit_alias_btn.setIconSize(QSize(12, 12))
         self.edit_alias_btn.setToolTip("장치 별칭(Alias) 편집")
-        self.edit_alias_btn.setFixedSize(20, 20)
+        self.edit_alias_btn.setFixedSize(22, 22)
         self.edit_alias_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.edit_alias_btn.setStyleSheet(tactile_button_qss("ghost", radius=4, padding="0px"))
         self.edit_alias_btn.clicked.connect(self._on_edit_alias)
         top_row.addWidget(self.edit_alias_btn)
 
         type_badge = QLabel(self._type_badge_text(device.device_type))
-        type_badge.setStyleSheet(
-            badge_qss(
-                fg=accent_hex,
-                bg=BG_INSET,
-                border=BORDER_HAIRLINE,
-                mono=True,
-                padding="1px 6px",
-                font_size=9,
-            )
-        )
+        type_badge.setProperty("pillState", "neutral")
         top_row.addWidget(type_badge)
         info_col.addLayout(top_row)
 
@@ -146,96 +104,66 @@ class DeviceItemWidget(QFrame):
         if device.key_count:
             meta_parts.append(f"{device.key_count}Keys")
         if device.is_registered:
-            meta_parts.append("ACTIVE")
+            meta_parts.append("Active")
         elif not device.is_connected:
-            meta_parts.append("OFFLINE")
+            meta_parts.append("Offline")
 
         meta_lbl = QLabel(" · ".join(meta_parts))
-        meta_lbl.setStyleSheet(
-            f"color: {TEXT_SECONDARY}; font-family: {FONT_MONO}; font-size: 9.5px; "
-            "border: none; background: transparent;"
-        )
+        meta_lbl.setProperty("role", "mono-muted")
         info_col.addWidget(meta_lbl)
 
         bottom_row = QHBoxLayout()
         bottom_row.setSpacing(6)
 
         reason_text = device.protection_reason or (
-            "Remappable Auxiliary" if not device.protected else "Protected"
+            "Remappable auxiliary" if not device.protected else "Protected"
         )
         reason_lbl = QLabel(reason_text)
-        reason_lbl.setStyleSheet(
-            f"color: {TEXT_MUTED}; font-size: 10px; border: none; background: transparent;"
-        )
+        reason_lbl.setProperty("role", "muted")
         bottom_row.addWidget(reason_lbl, 1)
 
         self.lock_btn = QPushButton()
-        self.lock_btn.setFixedHeight(20)
+        self.lock_btn.setProperty("btnRole", "protect-badge")
+        self.lock_btn.setFixedHeight(22)
         self.lock_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         if device.protected:
-            self.lock_btn.setIcon(make_vector_icon("shield", STATUS_WARN, 11))
+            self.lock_btn.setIcon(make_vector_icon("shield", "--filament-orange-text", 11))
             self.lock_btn.setIconSize(QSize(11, 11))
             self.lock_btn.setText("Protected")
-            self.lock_btn.setStyleSheet(
-                f"QPushButton {{ background-color: {STATUS_WARN_BG}; color: {STATUS_WARN}; "
-                f"border: 1px solid {STATUS_WARN_BORDER}; border-radius: 4px; padding: 0 7px; "
-                f"font-family: {FONT_MONO}; font-size: 9.5px; font-weight: 700; }}"
-                f"QPushButton:hover {{ border-color: {STATUS_WARN}; }}"
-            )
+            self.lock_btn.setProperty("state", "protected")
+        elif device.is_registered:
+            self.lock_btn.setText("Auxiliary")
+            self.lock_btn.setProperty("state", "active")
         else:
-            btn_text = "Auxiliary" if device.is_registered else "Standby"
-            btn_fg = STATUS_OK if device.is_registered else ACCENT_CYAN
-            btn_bg = STATUS_OK_BG if device.is_registered else ACCENT_CYAN_BG
-            btn_bd = STATUS_OK_BORDER if device.is_registered else ACCENT_CYAN_BORDER
-            self.lock_btn.setText(btn_text)
-            self.lock_btn.setStyleSheet(
-                f"QPushButton {{ background-color: {btn_bg}; color: {btn_fg}; "
-                f"border: 1px solid {btn_bd}; border-radius: 4px; padding: 0 7px; "
-                f"font-family: {FONT_MONO}; font-size: 9.5px; font-weight: 700; }}"
-                f"QPushButton:hover {{ border-color: {btn_fg}; }}"
-            )
-
+            self.lock_btn.setText("Standby")
+            self.lock_btn.setProperty("state", "standby")
+        repolish(self.lock_btn)
         self.lock_btn.clicked.connect(self._on_toggle_lock)
         bottom_row.addWidget(self.lock_btn)
 
         info_col.addLayout(bottom_row)
         root.addLayout(info_col, 1)
-
-        self._apply_border_style()
+        repolish(self)
 
     @staticmethod
     def _device_icon_meta(dev_type: DeviceType) -> tuple[str, str]:
         return {
-            DeviceType.HID_DIAL: ("dial", ACCENT_CYAN),
-            DeviceType.KEYPAD: ("keypad", ACCENT_AMBER),
-            DeviceType.KEYBOARD: ("keyboard", TEXT_SECONDARY),
-            DeviceType.MOUSE: ("mouse", STATUS_WARN),
-            DeviceType.HID_OTHER: ("hid", TEXT_MUTED),
-        }.get(dev_type, ("hid", TEXT_MUTED))
+            DeviceType.HID_DIAL: ("dial", "--filament-gold"),
+            DeviceType.KEYPAD: ("keypad", "--filament-orange-text"),
+            DeviceType.KEYBOARD: ("keyboard", "--text-secondary"),
+            DeviceType.MOUSE: ("mouse", "--text-secondary"),
+            DeviceType.HID_OTHER: ("hid", "--text-muted"),
+        }.get(dev_type, ("hid", "--text-muted"))
 
     @staticmethod
     def _type_badge_text(dev_type: DeviceType) -> str:
         return {
-            DeviceType.HID_DIAL: "DIAL",
-            DeviceType.KEYPAD: "KEYPAD",
-            DeviceType.KEYBOARD: "KBD",
-            DeviceType.MOUSE: "MOUSE",
+            DeviceType.HID_DIAL: "Dial",
+            DeviceType.KEYPAD: "Keypad",
+            DeviceType.KEYBOARD: "Keyboard",
+            DeviceType.MOUSE: "Mouse",
             DeviceType.HID_OTHER: "HID",
         }.get(dev_type, "HID")
-
-    def _apply_border_style(self) -> None:
-        self.setStyleSheet(
-            raised_card_qss(
-                "DeviceItemCard",
-                selected=self._selected,
-                border_accent=(
-                    STATUS_OK_BORDER
-                    if (not self._selected and self.device.is_registered and not self.device.protected)
-                    else None
-                ),
-                radius=6,
-            )
-        )
 
     def _on_edit_alias(self) -> None:
         new_alias, ok = QInputDialog.getText(
@@ -267,7 +195,7 @@ class DeviceItemWidget(QFrame):
         super().mousePressEvent(event)
 
 
-class DevicePanel(QFrame):
+class DevicePanel(DarkroomSurfaceCard):
     """좌측 장치 제어 패널 (연결 장치 스캔, 별칭 편집, Protected 토글, Listen 등록)."""
 
     listen_toggled = pyqtSignal(bool)
@@ -277,42 +205,40 @@ class DevicePanel(QFrame):
     alias_changed = pyqtSignal(str, str)
 
     def __init__(self) -> None:
-        super().__init__()
-        self.setObjectName("LeftDevicePanel")
+        super().__init__(warm_rim=False, radius_token="--radius-card", bg_token="--bg-surface")
         self.setMinimumWidth(296)
-        self.setStyleSheet(surface_panel_qss("LeftDevicePanel", radius=6))
 
         self._selected_device_id: str = ""
         self._listening: bool = False
         self._lang: str = "ko"
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
+        layout.setContentsMargins(16, 14, 16, 16)
+        layout.setSpacing(10)
 
         header = QHBoxLayout()
-        header.setSpacing(6)
-        self.title_lbl = QLabel("HARDWARE HUB")
-        self.title_lbl.setStyleSheet(section_header_qss())
+        header.setSpacing(8)
+        self.title_lbl = QLabel("Hardware Hub")
+        self.title_lbl.setProperty("role", "card-title")
         header.addWidget(self.title_lbl, 1)
 
         self.all_btn = QPushButton("전체")
-        self.all_btn.setFixedHeight(24)
+        self.all_btn.setProperty("btnRole", "quiet")
+        self.all_btn.setFixedHeight(26)
         self.all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.all_btn.setStyleSheet(tactile_button_qss("default", radius=4, padding="0 8px"))
         self.all_btn.clicked.connect(lambda: self._select_device(""))
         header.addWidget(self.all_btn)
 
         self.refresh_btn = QPushButton("스캔")
-        self.refresh_btn.setFixedHeight(24)
+        self.refresh_btn.setProperty("btnRole", "ghost")
+        self.refresh_btn.setFixedHeight(26)
         self.refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.refresh_btn.setStyleSheet(tactile_button_qss("default", radius=4, padding="0 8px"))
         self.refresh_btn.clicked.connect(self.refresh_requested.emit)
         header.addWidget(self.refresh_btn)
         layout.addLayout(header)
 
-        # Listen Mode 등록 버튼
         self.listen_btn = QPushButton()
+        self.listen_btn.setProperty("btnRole", "listen")
         self.listen_btn.setCheckable(True)
         self.listen_btn.setFixedHeight(32)
         self.listen_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -320,19 +246,16 @@ class DevicePanel(QFrame):
         self._update_listen_button_style(False)
         layout.addWidget(self.listen_btn)
 
-        self.count_lbl = QLabel("SCANNING...")
-        self.count_lbl.setStyleSheet(
-            f"color: {TEXT_SECONDARY}; font-family: {FONT_MONO}; font-size: 10px;"
-        )
+        self.count_lbl = QLabel("Scanning")
+        self.count_lbl.setProperty("role", "mono-muted")
         layout.addWidget(self.count_lbl)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self.scroll.setStyleSheet("background: transparent;")
 
         self.list_container = QWidget()
-        self.list_container.setStyleSheet("background: transparent;")
+        self.list_container.setProperty("role", "transparent-bg")
         self.list_layout = QVBoxLayout(self.list_container)
         self.list_layout.setContentsMargins(0, 0, 4, 0)
         self.list_layout.setSpacing(8)
@@ -350,20 +273,19 @@ class DevicePanel(QFrame):
         self._update_listen_button_style(self._listening)
 
     def _update_listen_button_style(self, active: bool) -> None:
-        if active:
-            self.listen_btn.setIcon(make_vector_icon("record", ACCENT_CYAN, 13))
-            self.listen_btn.setIconSize(QSize(13, 13))
-            self.listen_btn.setText(tr(self._lang, "hub_listen_on"))
-            self.listen_btn.setStyleSheet(
-                tactile_button_qss("cyan", radius=4, padding="0 10px", bold=True)
+        self.listen_btn.setProperty("active", active)
+        self.listen_btn.setIcon(
+            make_vector_icon(
+                "record",
+                "--filament-gold" if active else "--text-secondary",
+                13,
             )
-        else:
-            self.listen_btn.setIcon(make_vector_icon("record", ACCENT_AMBER, 13))
-            self.listen_btn.setIconSize(QSize(13, 13))
-            self.listen_btn.setText(tr(self._lang, "hub_listen_off"))
-            self.listen_btn.setStyleSheet(
-                tactile_button_qss("default", radius=4, padding="0 10px")
-            )
+        )
+        self.listen_btn.setIconSize(QSize(13, 13))
+        self.listen_btn.setText(
+            tr(self._lang, "hub_listen_on" if active else "hub_listen_off")
+        )
+        repolish(self.listen_btn)
 
     def _on_listen_btn_toggled(self, checked: bool) -> None:
         self._listening = checked
@@ -404,7 +326,7 @@ class DevicePanel(QFrame):
         aux_count = sum(1 for d in sorted_devs if not d.protected and d.is_connected)
         prot_count = sum(1 for d in sorted_devs if d.protected and d.is_connected)
         self.count_lbl.setText(
-            f"DEVICES {len(sorted_devs):02d}  ·  AUX {aux_count:02d}  ·  PROTECTED {prot_count:02d}"
+            f"Devices {len(sorted_devs):02d}  ·  Aux {aux_count:02d}  ·  Protected {prot_count:02d}"
         )
 
         for dev in sorted_devs:

@@ -35,6 +35,14 @@ def get_config_path(filename: str = "config.json") -> Path:
 WINDOWS_RUN_SUBKEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 WINDOWS_RUN_VALUE_NAME = "NEXUS_Remapper"
 
+TRIGGER_MODE_FOCUS = "focus"
+TRIGGER_MODE_PROCESS = "process"
+VALID_TRIGGER_MODES = (TRIGGER_MODE_FOCUS, TRIGGER_MODE_PROCESS)
+
+ERR_BOUND_IN_PROCESS_MODE = "프로세스 지정 모드에서 등록된 프로세스입니다."
+ERR_BOUND_IN_FOCUS_MODE = "포커스 모드에서 등록된 프로세스입니다."
+ERR_PROCESS_MODE_SINGLE_ONLY = "프로세스 지정 모드에서는 단 하나의 프로세스(.exe)만 지정할 수 있습니다."
+
 
 def build_startup_command(minimized: bool = False) -> str:
     """`.exe` 및 `.py` 실행 환경 모두에 대응하는 Windows 시작 프로그램 명령 문자열을 생성한다."""
@@ -154,25 +162,43 @@ class LayerConfig:
     name: str
     processes: list[str] = field(default_factory=list)
     description: str = ""
+    trigger_mode: str = TRIGGER_MODE_FOCUS
+
+    def __post_init__(self) -> None:
+        raw_mode = str(self.trigger_mode or TRIGGER_MODE_FOCUS).strip().lower()
+        if self.name == "default" or raw_mode not in VALID_TRIGGER_MODES:
+            self.trigger_mode = TRIGGER_MODE_FOCUS
+        else:
+            self.trigger_mode = raw_mode
 
     def to_dict(self) -> dict[str, Any]:
+        mode = TRIGGER_MODE_FOCUS if self.name == "default" else self.trigger_mode
         return {
             "name": self.name,
             "processes": list(self.processes),
             "description": self.description,
+            "trigger_mode": mode,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> LayerConfig:
+        name = str(data["name"]).strip()
         procs = [
             str(p).strip()
             for p in data.get("processes", [])
             if str(p).strip()
         ]
+        raw_mode = str(data.get("trigger_mode", TRIGGER_MODE_FOCUS)).strip().lower()
+        trigger_mode = (
+            TRIGGER_MODE_FOCUS
+            if (name == "default" or raw_mode not in VALID_TRIGGER_MODES)
+            else raw_mode
+        )
         return cls(
-            name=str(data["name"]).strip(),
+            name=name,
             processes=procs,
             description=str(data.get("description", "")),
+            trigger_mode=trigger_mode,
         )
 
 
@@ -195,16 +221,23 @@ def create_default_config() -> dict[str, Any]:
             "language": "ko",
         },
         "layer_configs": [
-            {"name": "default", "processes": [], "description": "기본 폴백 레이어"},
+            {
+                "name": "default",
+                "processes": [],
+                "description": "기본 폴백 레이어",
+                "trigger_mode": TRIGGER_MODE_FOCUS,
+            },
             {
                 "name": "bim",
                 "processes": ["Revit.exe", "acad.exe"],
                 "description": "CAD/BIM 작업 레이어",
+                "trigger_mode": TRIGGER_MODE_FOCUS,
             },
             {
                 "name": "media",
                 "processes": ["MinimalMediaPlayer.exe"],
                 "description": "미디어 제어 레이어",
+                "trigger_mode": TRIGGER_MODE_FOCUS,
             },
         ],
         "process_profiles": dict(DEFAULT_PROCESS_PROFILES),
@@ -227,11 +260,20 @@ class ConfigStore:
         ]
 
     def _sync_layers_to_data(self) -> None:
-        # "default" 레이어는 항상 첫 번째 기본 레이어로 보장
-        if not any(lc.name == "default" for lc in self.layer_configs):
+        # "default" 레이어는 항상 첫 번째 기본 레이어(focus 모드)로 보장
+        default_lc = self.get_layer_config("default")
+        if default_lc is None:
             self.layer_configs.insert(
-                0, LayerConfig(name="default", processes=[], description="기본 폴백 레이어")
+                0,
+                LayerConfig(
+                    name="default",
+                    processes=[],
+                    description="기본 폴백 레이어",
+                    trigger_mode=TRIGGER_MODE_FOCUS,
+                ),
             )
+        else:
+            default_lc.trigger_mode = TRIGGER_MODE_FOCUS
         self.data["layer_configs"] = [lc.to_dict() for lc in self.layer_configs]
         self.settings["layers"] = [lc.name for lc in self.layer_configs]
 
@@ -304,6 +346,7 @@ class ConfigStore:
         name: str,
         processes: list[str] | None = None,
         description: str = "",
+        trigger_mode: str = TRIGGER_MODE_FOCUS,
     ) -> LayerConfig:
         """새 사용자 정의 레이어를 생성한다."""
         clean = name.strip()
@@ -312,8 +355,20 @@ class ConfigStore:
         if self.get_layer_config(clean) is not None:
             raise ValueError(f"Layer '{clean}' already exists")
 
-        norm_procs = self._normalize_process_list(processes or [])
-        lc = LayerConfig(name=clean, processes=norm_procs, description=description)
+        mode = str(trigger_mode or TRIGGER_MODE_FOCUS).strip().lower()
+        if mode not in VALID_TRIGGER_MODES:
+            raise ValueError(f"Unsupported trigger_mode: {trigger_mode}")
+
+        norm_procs = self.validate_layer_processes(
+            clean, processes or [], trigger_mode=mode
+        )
+        self._deduplicate_same_mode(clean, mode, norm_procs)
+        lc = LayerConfig(
+            name=clean,
+            processes=norm_procs,
+            description=description,
+            trigger_mode=mode,
+        )
         self.layer_configs.append(lc)
         self._sync_layers_to_data()
         return lc
@@ -372,36 +427,136 @@ class ConfigStore:
                 result.append(clean)
         return result
 
+    def validate_layer_processes(
+        self,
+        layer_name: str,
+        processes: list[str],
+        trigger_mode: str | None = None,
+    ) -> list[str]:
+        """레이어 트리거 모드 및 크로스-모드 프로세스 상호 배타 규칙을 검증한다."""
+        if trigger_mode is None:
+            existing = self.get_layer_config(layer_name)
+            mode = existing.trigger_mode if existing is not None else TRIGGER_MODE_FOCUS
+        else:
+            mode = str(trigger_mode).strip().lower()
+            if mode not in VALID_TRIGGER_MODES:
+                raise ValueError(f"Unsupported trigger_mode: {trigger_mode}")
+
+        norm_procs = self._normalize_process_list(processes)
+        if mode == TRIGGER_MODE_PROCESS and len(norm_procs) > 1:
+            raise ValueError(ERR_PROCESS_MODE_SINGLE_ONLY)
+
+        bound_low = {p.lower() for p in norm_procs}
+        if bound_low:
+            for other in self.layer_configs:
+                if other.name == layer_name or other.trigger_mode == mode:
+                    continue
+                if any(p.lower() in bound_low for p in other.processes):
+                    if mode == TRIGGER_MODE_FOCUS:
+                        raise ValueError(ERR_BOUND_IN_PROCESS_MODE)
+                    raise ValueError(ERR_BOUND_IN_FOCUS_MODE)
+
+        return norm_procs
+
+    def _deduplicate_same_mode(
+        self,
+        layer_name: str,
+        trigger_mode: str,
+        norm_procs: list[str],
+    ) -> None:
+        """동일 모드 내 다른 레이어에 중복 바인딩된 `.exe`를 정리한다."""
+        bound_low = {p.lower() for p in norm_procs}
+        if not bound_low:
+            return
+        for other in self.layer_configs:
+            if other.name != layer_name and other.trigger_mode == trigger_mode:
+                other.processes = [
+                    p for p in other.processes if p.lower() not in bound_low
+                ]
+
+    def set_layer_trigger_mode(self, layer_name: str, trigger_mode: str) -> bool:
+        """레이어의 트리거 모드(`focus` / `process`)를 변경한다."""
+        lc = self.get_layer_config(layer_name)
+        if lc is None:
+            return False
+
+        mode = str(trigger_mode or "").strip().lower()
+        if mode not in VALID_TRIGGER_MODES:
+            raise ValueError(f"Unsupported trigger_mode: {trigger_mode}")
+
+        if layer_name == "default":
+            return mode == TRIGGER_MODE_FOCUS
+
+        norm_procs = self.validate_layer_processes(
+            layer_name, lc.processes, trigger_mode=mode
+        )
+        self._deduplicate_same_mode(layer_name, mode, norm_procs)
+        lc.trigger_mode = mode
+        lc.processes = norm_procs
+        self._sync_layers_to_data()
+        return True
+
     def set_layer_processes(self, layer_name: str, processes: list[str]) -> bool:
         """특정 레이어에 자동 전환용 `.exe` 프로세스 목록을 바인딩한다."""
         lc = self.get_layer_config(layer_name)
         if lc is None:
             return False
-        norm_procs = self._normalize_process_list(processes)
-        bound_low = {p.lower() for p in norm_procs}
-        # 동일 .exe가 다른 레이어에 중복 바인딩되지 않도록 정리
-        for other in self.layer_configs:
-            if other.name != layer_name:
-                other.processes = [
-                    p for p in other.processes if p.lower() not in bound_low
-                ]
+        norm_procs = self.validate_layer_processes(
+            layer_name, processes, trigger_mode=lc.trigger_mode
+        )
+        self._deduplicate_same_mode(layer_name, lc.trigger_mode, norm_procs)
         lc.processes = norm_procs
         self._sync_layers_to_data()
         return True
 
+    def get_focus_layer_bindings(self) -> dict[str, list[str]]:
+        """포커스 모드(`focus`) 레이어의 `{layer_name: [exe1, ...]}` 매핑을 반환한다."""
+        return {
+            lc.name: list(lc.processes)
+            for lc in self.layer_configs
+            if lc.trigger_mode == TRIGGER_MODE_FOCUS
+        }
+
+    def get_process_layer_bindings(self) -> dict[str, str]:
+        """프로세스 지정 모드(`process`) 레이어의 `{layer_name: exe}` 매핑을 반환한다."""
+        return {
+            lc.name: lc.processes[0]
+            for lc in self.layer_configs
+            if lc.trigger_mode == TRIGGER_MODE_PROCESS and lc.processes
+        }
+
     def get_layer_bindings(self) -> dict[str, list[str]]:
-        """`{layer_name: [exe1, exe2, ...]}` 매핑 딕셔너리를 반환한다."""
-        return {lc.name: list(lc.processes) for lc in self.layer_configs}
+        """포커스 전환용 `{layer_name: [exe1, exe2, ...]}` 매핑 딕셔너리를 반환한다."""
+        return self.get_focus_layer_bindings()
 
     def resolve_layer_for_process(self, process_name: str) -> str:
-        """프로세스명(`.exe`)에 바인딩된 레이어명을 반환한다(없으면 `default`)."""
+        """포그라운드 프로세스명(`.exe`)에 바인딩된 포커스 모드 레이어명을 반환한다(없으면 `default`)."""
         if not process_name:
             return "default"
         target = process_name.strip().lower()
         for lc in self.layer_configs:
+            if lc.trigger_mode != TRIGGER_MODE_FOCUS:
+                continue
             if any(p.lower() == target for p in lc.processes):
                 return lc.name
         return "default"
+
+    def resolve_running_process_layers(
+        self, running_processes: list[str] | set[str]
+    ) -> list[str]:
+        """실행 중인 프로세스 목록과 일치하는 `process` 모드 레이어명 목록을 순서대로 반환한다."""
+        running_low = {
+            str(p).strip().lower() for p in running_processes if str(p).strip()
+        }
+        if not running_low:
+            return []
+        matched: list[str] = []
+        for lc in self.layer_configs:
+            if lc.trigger_mode != TRIGGER_MODE_PROCESS or not lc.processes:
+                continue
+            if lc.processes[0].strip().lower() in running_low:
+                matched.append(lc.name)
+        return matched
 
     def export_layer_to_file(self, layer_name: str, file_path: Path) -> int:
         """선택된 단일 레이어의 프로세스 바인딩 및 매핑 규칙을 `.json`으로 내보낸다."""
@@ -433,13 +588,39 @@ class ConfigStore:
         lc = LayerConfig.from_dict(raw["layer"])
         existing = self.get_layer_config(lc.name)
         if existing is None:
+            target_mode = (
+                TRIGGER_MODE_FOCUS if lc.name == "default" else lc.trigger_mode
+            )
+            target_procs = list(lc.processes)
+        elif mode == "replace":
+            target_mode = (
+                TRIGGER_MODE_FOCUS if lc.name == "default" else lc.trigger_mode
+            )
+            target_procs = list(lc.processes)
+        else:
+            target_mode = (
+                TRIGGER_MODE_FOCUS if lc.name == "default" else existing.trigger_mode
+            )
+            target_procs = self._normalize_process_list(
+                existing.processes + lc.processes
+            )
+
+        norm_procs = self.validate_layer_processes(
+            lc.name, target_procs, trigger_mode=target_mode
+        )
+        self._deduplicate_same_mode(lc.name, target_mode, norm_procs)
+
+        if existing is None:
+            lc.trigger_mode = target_mode
+            lc.processes = norm_procs
             self.layer_configs.append(lc)
         elif mode == "replace":
-            existing.processes = list(lc.processes)
+            existing.trigger_mode = target_mode
+            existing.processes = norm_procs
             existing.description = lc.description
         else:
-            merged_procs = self._normalize_process_list(existing.processes + lc.processes)
-            existing.processes = merged_procs
+            existing.trigger_mode = target_mode
+            existing.processes = norm_procs
 
         imported_rules = [
             MappingRule.from_dict({**item, "layer": lc.name})

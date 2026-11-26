@@ -1,93 +1,267 @@
-"""Wonjae's Signature Design System — 'Obsidian Tactile HUD' 마스터 토큰 및 중앙 QSS 모듈.
+"""Darkroom Filament v1.1 — Canonical Design Tokens, Assets & Global QSS.
 
-- 순흑(#000000)·순백(#FFFFFF)·무분별한 다색 네온/퍼플 배제
-- 매트 흑요석/차콜 베이스(#111216 ~ #1D1F26), 건축적 앰버 오렌지(#E87A3E) 주 포인트, 광학 시안(#38BDF8) 텔레메트리
-- 돌출(Raised) / 음각(Inset) / 눌림(Pressed) 물성 셰이딩 및 Windows 11 네이티브 다크 타이틀바 제공
+`UI_darkroom` (Quiet Pro: 92% Monochrome + 8% Thermal Filament) 규격을 따르며,
+순흑·순백, 컴포넌트 인라인 `setStyleSheet`, Qt 위젯 드롭 섀도우 이펙트를 배제한다.
 """
 
 from __future__ import annotations
 
-import ctypes
-from ctypes import wintypes
+import os
+import re
+import sys
+from pathlib import Path
+from typing import Dict
 
-# ============================================================================
-# 1. Color Tokens — Obsidian Tactile HUD
-# ============================================================================
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QColor, QFont, QIcon
+from PyQt6.QtWidgets import QApplication, QWidget
 
-# A. Surface & Depth Hierarchy
-BG_INSET = "#0D0E12"         # 음각 홈, 인풋 필드, 슬라이더 트랙, 로그 터미널 내부
-BG_BASE = "#111216"          # 최하단 메인 윈도우 캔버스 베이스
-BG_SURFACE = "#16181E"       # 좌측 내비게이션 레일, 상단 커맨드 헤더, 하단 상태 바
-BG_RAISED = "#1D1F26"        # 돌출 카드, 물리 키캡, 기본 버튼 표면
-BG_HOVER = "#242730"         # 호버 시 미세하게 밝아지는 인터랙티브 표면
+# 전역 모션 활성화 플래그 (Web prefers-reduced-motion 1:1 대응)
+MOTION_ENABLED: bool = True
 
-BORDER_HAIRLINE = "#2A2D36"  # 기본 1px 구조 구분선 및 카드 외곽선
-BORDER_BEVEL = "#353945"     # Raised 요소 상단 1px 빛 반사(Bevel Highlight)
-BORDER_RAISED_SIDE = "#22252E"
-BORDER_INSET_TOP = "#08090C"
-BORDER_INSET_BOTTOM = "#282B34"
+# 1px Warm Rim-Light 커서 추적 정규화 X 클램프 경계
+RIM_CLAMP_MIN: float = 0.08
+RIM_CLAMP_MAX: float = 0.92
 
-# B. Brand & Semantic Accents (이원화 컬러 규율: Amber Action / Cyan Telemetry)
-ACCENT_AMBER = "#E87A3E"                # Primary Action, 활성 메뉴 3px 인디케이터, 핵심 강조
-ACCENT_AMBER_GLOW = "#FF984F"           # 호버 하이라이트, 트리거 발광
-ACCENT_AMBER_DIM = "rgba(232, 122, 62, 0.14)"
-ACCENT_AMBER_BG = "#261B16"             # QSS 불투명 앰버 틴트 배경
-ACCENT_AMBER_BORDER = "#7A4223"
+TOKENS: Dict[str, str] = {
+    # A. Surface Hierarchy (5)
+    "--bg-inset": "#0E0F12",
+    "--bg-canvas": "#121316",
+    "--bg-sidebar": "#15161A",
+    "--bg-surface": "#18191D",
+    "--bg-elevated": "#1E2026",
+    # B. Specular Hairlines & 1px Warm Rim-Light (8)
+    "--border-subtle": "rgba(255, 255, 255, 0.04)",
+    "--border-specular": "rgba(255, 255, 255, 0.07)",
+    "--border-specular-strong": "rgba(255, 255, 255, 0.12)",
+    "--rim-gold": "rgba(246, 196, 83, 0.45)",
+    "--rim-orange": "rgba(240, 110, 53, 0.28)",
+    "--rim-red": "rgba(229, 72, 77, 0.36)",
+    "--rim-wash": "rgba(246, 196, 83, 0.05)",
+    "--rim-center-default": "0.50",
+    # C. Thermal Filament Spectrum & Semantic Accents (14)
+    "--filament-gold": "#F6C453",
+    "--filament-orange": "#F06E35",
+    "--filament-orange-text": "#F48C5E",
+    "--filament-red": "#E5484D",
+    "--ember-core": "#FFF5DC",
+    "--filament-gold-bg": "rgba(246, 196, 83, 0.12)",
+    "--filament-gold-border": "rgba(246, 196, 83, 0.28)",
+    "--filament-orange-bg": "rgba(240, 110, 53, 0.14)",
+    "--filament-orange-border": "rgba(240, 110, 53, 0.30)",
+    "--filament-red-bg": "rgba(229, 72, 77, 0.14)",
+    "--filament-red-border": "rgba(229, 72, 77, 0.30)",
+    "--filament-neutral-bg": "rgba(255, 255, 255, 0.06)",
+    "--filament-neutral-border": "rgba(255, 255, 255, 0.10)",
+    "--status-danger-text": "#FCA5A5",
+    # D. CTA, Ghost & Typography Colors (10)
+    "--cta-bg": "#F2F3F5",
+    "--cta-hover": "#E6E8EC",
+    "--cta-pressed": "#D8DBE0",
+    "--cta-text": "#121316",
+    "--btn-ghost-bg": "rgba(255, 255, 255, 0.04)",
+    "--btn-ghost-hover": "rgba(255, 255, 255, 0.08)",
+    "--text-primary": "#F2F3F5",
+    "--text-secondary": "#9EA3AE",
+    "--text-muted": "#848A96",
+    "--text-disabled": "#50545E",
+    # E. Shadows & Backdrop (5)
+    "--shadow-floating": "0 12px 32px rgba(8, 9, 12, 0.55), 0 2px 6px rgba(8, 9, 12, 0.35)",
+    "--shadow-card": "0 4px 16px rgba(8, 9, 12, 0.35)",
+    "--backdrop-palette": "rgba(8, 9, 12, 0.68)",
+    "--shadow-alpha-heavy": "rgba(8, 9, 12, 0.55)",
+    "--shadow-alpha-soft": "rgba(8, 9, 12, 0.35)",
+    # F. Typography, Spacing, Radius, Breakpoints & Motion
+    "--font-sans": '"Inter", "Pretendard", "Segoe UI", "Malgun Gothic", sans-serif',
+    "--font-mono": '"JetBrains Mono", "Cascadia Mono", "Consolas", monospace',
+    "--text-editorial": "26px",
+    "--text-metric": "24px",
+    "--text-card-title": "14px",
+    "--text-body": "13px",
+    "--text-badge": "12px",
+    "--text-micro": "11px",
+    "--lh-editorial": "32px",
+    "--lh-metric": "28px",
+    "--lh-card-title": "20px",
+    "--lh-body": "18px",
+    "--lh-badge": "16px",
+    "--lh-micro": "14px",
+    "--space-1": "4px",
+    "--space-2": "8px",
+    "--space-3": "12px",
+    "--space-4": "16px",
+    "--space-5": "20px",
+    "--space-6": "24px",
+    "--space-8": "32px",
+    "--radius-scroll": "3px",
+    "--radius-xs": "6px",
+    "--radius-sm": "8px",
+    "--radius-item": "10px",
+    "--radius-modal": "14px",
+    "--radius-card": "16px",
+    "--radius-pill": "999px",
+    "--bp-min": "760px",
+    "--bp-standard": "960px",
+    "--bp-wide": "1360px",
+    "--bp-content-max": "1120px",
+    "--motion-fast": "120ms",
+    "--motion-base": "160ms",
+    "--motion-overlay": "220ms",
+    "--motion-optic": "320ms",
+    "--motion-rim-track": "160ms",
+    "--motion-rim-decay": "360ms",
+    "--motion-breath": "3200ms",
+    "--ease-cubic": "cubic-bezier(0.22, 1, 0.36, 1)",
+    "--ease-quart": "cubic-bezier(0.25, 1, 0.5, 1)",
+    "--ease-overlay": "cubic-bezier(0.16, 1, 0.3, 1)",
+}
 
-ACCENT_CYAN = "#38BDF8"                 # Telemetry: 연결 LED, 활성 프로세스, 센서, Listen
-ACCENT_CYAN_DIM = "rgba(56, 189, 248, 0.12)"
-ACCENT_CYAN_BG = "#142029"              # QSS 불투명 시안 틴트 배경
-ACCENT_CYAN_BORDER = "#1F5773"
-
-STATUS_OK = "#34D399"                   # 정상 연결, 커널 모드 활성, 검증 통과
-STATUS_OK_BG = "#13241E"
-STATUS_OK_BORDER = "#1E5B45"
-
-STATUS_WARN = "#F59E0B"                 # 폴백 모드, Bypass, 주의 알림
-STATUS_WARN_BG = "#261E11"
-STATUS_WARN_BORDER = "#70490D"
-
-STATUS_DANGER = "#EF4444"               # 비상 탈출(Panic Exit), 삭제 확인, 치명적 오류
-STATUS_DANGER_BG = "#281517"
-STATUS_DANGER_BORDER = "#7F1D1D"
-
-# C. Typography Hierarchy
-TEXT_PRIMARY = "#ECEEF2"                # 제목, 핵심 라벨, 활성 수치 (오프화이트)
-TEXT_SECONDARY = "#9CA3AF"              # 본문 설명, 비활성 메뉴 항목
-TEXT_MUTED = "#646B7A"                  # 인덱스 번호(01), 단위 표기, 플레이스홀더
-
-# D. Font Stacks
-FONT_SANS = '"Pretendard", "Segoe UI", "Malgun Gothic", "Noto Sans JP", sans-serif'
-FONT_MONO = '"JetBrains Mono", "Cascadia Mono", "Consolas", monospace'
-
-# Minimap Window Palette (절제된 Obsidian HUD 조화 톤)
-MINIMAP_PALETTE: tuple[str, ...] = (
-    ACCENT_AMBER,
-    ACCENT_CYAN,
-    STATUS_OK,
-    STATUS_WARN,
-    TEXT_SECONDARY,
+_RGBA_RE = re.compile(
+    r"rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([0-9.]+)\s*)?\)"
 )
 
 
-def action_accent_color(action_type_str: str) -> str:
-    """액션 유형을 Obsidian Tactile HUD 이원화 포인트 컬러(Amber/Cyan/Silver)로 매핑한다."""
-    t = str(action_type_str).lower()
-    if t in ("key_combo", "workspace_layout", "launch_app", "layer_shift"):
-        return ACCENT_AMBER
-    if t in ("zoom", "mouse_wheel", "brightness"):
-        return ACCENT_CYAN
-    return TEXT_SECONDARY
+def px_int(name: str) -> int:
+    """'16px' 토큰을 정수 픽셀로 반환한다."""
+    return int(TOKENS[name].replace("px", "").strip())
+
+
+def ms_int(name: str) -> int:
+    """'120ms' 모션 토큰을 밀리초 정수로 반환한다."""
+    if not MOTION_ENABLED:
+        return 0
+    return int(TOKENS[name].replace("ms", "").strip())
+
+
+def float_token(name: str) -> float:
+    """부동소수점 토큰 값을 반환한다."""
+    return float(TOKENS[name].strip())
+
+
+def parse_color(value: str, alpha_override: float | None = None) -> QColor:
+    """HEX 또는 rgba(...) 문자열을 QColor로 변환한다."""
+    raw = value.strip()
+    if raw.startswith("#"):
+        col = QColor(raw)
+    else:
+        match = _RGBA_RE.match(raw)
+        if not match:
+            col = QColor(raw)
+        else:
+            r, g, b = int(match.group(1)), int(match.group(2)), int(match.group(3))
+            a = float(match.group(4)) if match.group(4) is not None else 1.0
+            col = QColor(r, g, b)
+            col.setAlphaF(max(0.0, min(1.0, a)))
+    if alpha_override is not None:
+        col.setAlphaF(max(0.0, min(1.0, alpha_override)))
+    return col
+
+
+def qcolor(token_name: str, alpha_override: float | None = None) -> QColor:
+    """토큰 키에서 QColor를 생성한다."""
+    return parse_color(TOKENS[token_name], alpha_override=alpha_override)
+
+
+def font_for(role: str = "body", weight: int | None = None, mono: bool = False) -> QFont:
+    """역할별 DIP 픽셀 폰트를 생성한다 (`QFont.setPixelSize` 통일)."""
+    role_map = {
+        "editorial": ("--text-editorial", QFont.Weight.DemiBold, False, -2.0),
+        "metric": ("--text-metric", QFont.Weight.Medium, False, 0.0),
+        "card-title": ("--text-card-title", QFont.Weight.Medium, False, 0.0),
+        "body": ("--text-body", QFont.Weight.Normal, False, 0.0),
+        "badge": ("--text-badge", QFont.Weight.Medium, False, 0.0),
+        "micro": ("--text-micro", QFont.Weight.Medium, False, 0.0),
+    }
+    size_key, default_weight, default_mono, tracking_pct = role_map.get(
+        role, ("--text-body", QFont.Weight.Normal, False, 0.0)
+    )
+    use_mono = mono or default_mono
+    families = (
+        ["JetBrains Mono", "Cascadia Mono", "Consolas", "monospace"]
+        if use_mono
+        else ["Inter", "Pretendard", "Segoe UI", "Malgun Gothic", "sans-serif"]
+    )
+    f = QFont()
+    f.setFamilies(families)
+    f.setPixelSize(px_int(size_key))
+    f.setWeight(QFont.Weight(weight) if weight is not None else default_weight)
+    if tracking_pct != 0.0:
+        f.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 100.0 + tracking_pct)
+    return f
+
+
+def line_height(role: str = "body") -> int:
+    """역할별 기준 행간(DIP px)을 반환한다."""
+    lh_map = {
+        "editorial": "--lh-editorial",
+        "metric": "--lh-metric",
+        "card-title": "--lh-card-title",
+        "body": "--lh-body",
+        "badge": "--lh-badge",
+        "micro": "--lh-micro",
+        "secondary": "--lh-body",
+        "muted": "--lh-micro",
+        "error": "--lh-micro",
+        "disabled": "--lh-body",
+    }
+    return px_int(lh_map.get(role, "--lh-body"))
+
+
+def apply_dpi_and_fonts(app: QApplication) -> None:
+    """PassThrough DPI 정책 및 기본 픽셀 폰트를 적용한다."""
+    QApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+    )
+    app.setFont(font_for("body"))
+
+
+def repolish(widget: QWidget) -> None:
+    """동적 속성 변경 후 QSS 스타일을 즉시 재평가한다."""
+    style = widget.style()
+    if style is not None:
+        style.unpolish(widget)
+        style.polish(widget)
+    widget.update()
 
 
 # ============================================================================
-# 2. Windows 11 네이티브 다크 타이틀바 (DwmSetWindowAttribute)
+# 번들 에셋 아이콘 경로 & Windows 11 다크 타이틀바
 # ============================================================================
+
+def get_asset_path(relative_path: str) -> Path:
+    """개발 환경과 PyInstaller(`_MEIPASS`) 모두에서 `assets/` 경로를 안전하게 찾는다."""
+    candidates: list[Path] = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(Path(str(meipass)) / relative_path)
+    if getattr(sys, "frozen", False):
+        candidates.append(Path(sys.executable).resolve().parent / relative_path)
+    root_dir = Path(__file__).resolve().parent.parent
+    candidates.append(root_dir / relative_path)
+    for cand in candidates:
+        if cand.is_file():
+            return cand
+    return candidates[-1]
+
+
+def load_app_icon() -> QIcon:
+    """Darkroom Filament Mode B 멀티 해상도 앱 아이콘(`app_icon.ico` / `.png`)을 로드한다."""
+    for rel in ("assets/app_icon.ico", "assets/app_icon_256.png", "assets/app_icon.png"):
+        path = get_asset_path(rel)
+        if path.is_file():
+            icon = QIcon(str(path))
+            if not icon.isNull():
+                return icon
+    return QIcon()
+
 
 DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1 = 19
 DWMWA_USE_IMMERSIVE_DARK_MODE = 20
 
 try:
+    import ctypes
+    from ctypes import wintypes
+
     _dwmapi = ctypes.WinDLL("dwmapi", use_last_error=True)
     _dwmapi.DwmSetWindowAttribute.argtypes = [
         wintypes.HWND,
@@ -101,9 +275,12 @@ except OSError:
 
 
 def apply_win11_dark_titlebar(hwnd: int) -> bool:
-    """Windows 10/11 OS 타이틀바를 Obsidian 다크 모드로 전환한다."""
-    if _dwmapi is None or not hwnd:
+    """Windows 10/11 OS 타이틀바를 Darkroom 딥 차콜 테마로 전환한다."""
+    if os.name != "nt" or _dwmapi is None or not hwnd:
         return False
+    import ctypes
+    from ctypes import wintypes
+
     value = ctypes.c_int(1)
     for attr in (DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1):
         hr = _dwmapi.DwmSetWindowAttribute(
@@ -118,309 +295,652 @@ def apply_win11_dark_titlebar(hwnd: int) -> bool:
 
 
 # ============================================================================
-# 3. Tactile Elevation QSS 생성 헬퍼 (Raised / Inset / Pressed)
+# Thermal Load Color Helper
 # ============================================================================
 
-def surface_panel_qss(object_name: str, radius: int = 6) -> str:
-    """1px 헤어라인 구분선과 매트 흑요석 표면을 적용한 패널 스타일."""
-    return (
-        f"QFrame#{object_name} {{"
-        f"  background-color: {BG_SURFACE};"
-        f"  border: 1px solid {BORDER_HAIRLINE};"
-        f"  border-radius: {radius}px;"
-        "}"
-    )
+def thermal_color_for_load(load: float) -> str:
+    """부하율(0.0~1.0)에 따른 3단계 Thermal Spectrum 색상을 반환한다."""
+    clamped = max(0.0, min(1.0, float(load)))
+    if clamped < 0.40:
+        return TOKENS["--filament-gold"]
+    if clamped < 0.72:
+        return TOKENS["--filament-orange"]
+    return TOKENS["--filament-red"]
 
 
-def raised_card_qss(
-    object_name: str,
-    selected: bool = False,
-    border_accent: str | None = None,
-    bg_override: str | None = None,
-    radius: int = 6,
-) -> str:
-    """상단 1px 빛 반사(Bevel)와 좌우하단 음영을 가진 돌출(Raised) 카드 스타일."""
-    bg = bg_override or (ACCENT_AMBER_BG if selected else BG_RAISED)
-    if border_accent:
-        return (
-            f"QFrame#{object_name} {{"
-            f"  background-color: {bg};"
-            f"  border: 1px solid {border_accent};"
-            f"  border-radius: {radius}px;"
-            "}"
-        )
-    if selected:
-        return (
-            f"QFrame#{object_name} {{"
-            f"  background-color: {bg};"
-            f"  border: 1px solid {ACCENT_AMBER};"
-            f"  border-radius: {radius}px;"
-            "}"
-        )
-    return (
-        f"QFrame#{object_name} {{"
-        f"  background-color: {bg};"
-        f"  border: 1px solid {BORDER_RAISED_SIDE};"
-        f"  border-top: 1px solid {BORDER_BEVEL};"
-        f"  border-radius: {radius}px;"
-        "}"
-        f"QFrame#{object_name}:hover {{"
-        f"  background-color: {BG_HOVER};"
-        f"  border: 1px solid {BORDER_HAIRLINE};"
-        f"  border-top: 1px solid {BORDER_BEVEL};"
-        "}"
-    )
-
-
-def inset_slot_qss(object_name: str = "", radius: int = 4) -> str:
-    """표면 안쪽으로 파인 음각(Inset) 슬롯/트랙 컨테이너 스타일."""
-    selector = f"QFrame#{object_name}" if object_name else "QFrame"
-    return (
-        f"{selector} {{"
-        f"  background-color: {BG_INSET};"
-        f"  border: 1px solid {BORDER_HAIRLINE};"
-        f"  border-top: 1px solid {BORDER_INSET_TOP};"
-        f"  border-bottom: 1px solid {BORDER_INSET_BOTTOM};"
-        f"  border-radius: {radius}px;"
-        "}"
-    )
-
-
-def tactile_button_qss(
-    variant: str = "default",
-    radius: int = 4,
-    padding: str = "0 10px",
-    font_size: int = 11,
-    bold: bool = False,
-) -> str:
-    """Raised -> Hover -> Pressed 물리 눌림 피드백을 지원하는 버튼 QSS."""
-    weight = "700" if bold else "600"
-    if variant == "amber":
-        return (
-            f"QPushButton {{ background-color: {ACCENT_AMBER_BG}; color: {ACCENT_AMBER_GLOW}; "
-            f"border: 1px solid {ACCENT_AMBER_BORDER}; border-top: 1px solid {ACCENT_AMBER}; "
-            f"border-radius: {radius}px; padding: {padding}; font-size: {font_size}px; font-weight: 700; }}"
-            f"QPushButton:hover {{ background-color: #302018; border-color: {ACCENT_AMBER_GLOW}; color: {TEXT_PRIMARY}; }}"
-            f"QPushButton:pressed {{ background-color: {BG_SURFACE}; border: 1px solid {ACCENT_AMBER_BORDER}; }}"
-        )
-    if variant == "amber_solid":
-        return (
-            f"QPushButton {{ background-color: {ACCENT_AMBER}; color: {BG_BASE}; "
-            f"border: 1px solid {ACCENT_AMBER_BORDER}; border-top: 1px solid {ACCENT_AMBER_GLOW}; "
-            f"border-radius: {radius}px; padding: {padding}; font-size: {font_size}px; font-weight: 800; }}"
-            f"QPushButton:hover {{ background-color: {ACCENT_AMBER_GLOW}; }}"
-            f"QPushButton:pressed {{ background-color: #C9642D; border-top: 1px solid {ACCENT_AMBER_BORDER}; }}"
-        )
-    if variant == "cyan":
-        return (
-            f"QPushButton {{ background-color: {ACCENT_CYAN_BG}; color: {ACCENT_CYAN}; "
-            f"border: 1px solid {ACCENT_CYAN_BORDER}; border-top: 1px solid {ACCENT_CYAN}; "
-            f"border-radius: {radius}px; padding: {padding}; font-size: {font_size}px; font-weight: 700; }}"
-            f"QPushButton:hover {{ background-color: #192A36; border-color: {ACCENT_CYAN}; color: {TEXT_PRIMARY}; }}"
-            f"QPushButton:pressed {{ background-color: {BG_SURFACE}; border: 1px solid {ACCENT_CYAN_BORDER}; }}"
-        )
-    if variant == "danger":
-        return (
-            f"QPushButton {{ background-color: {STATUS_DANGER_BG}; color: {STATUS_DANGER}; "
-            f"border: 1px solid {STATUS_DANGER_BORDER}; border-radius: {radius}px; "
-            f"padding: {padding}; font-size: {font_size}px; font-weight: {weight}; }}"
-            f"QPushButton:hover {{ background-color: #35191C; border-color: {STATUS_DANGER}; }}"
-            f"QPushButton:pressed {{ background-color: {BG_SURFACE}; }}"
-        )
-    if variant == "ghost":
-        return (
-            f"QPushButton {{ background-color: transparent; color: {TEXT_SECONDARY}; "
-            f"border: 1px solid transparent; border-radius: {radius}px; "
-            f"padding: {padding}; font-size: {font_size}px; font-weight: {weight}; }}"
-            f"QPushButton:hover {{ background-color: {BG_HOVER}; color: {TEXT_PRIMARY}; border-color: {BORDER_HAIRLINE}; }}"
-            f"QPushButton:pressed {{ background-color: {BG_SURFACE}; }}"
-        )
-    if variant == "ghost_danger":
-        return (
-            f"QPushButton {{ background-color: transparent; color: {TEXT_MUTED}; "
-            f"border: 1px solid transparent; border-radius: {radius}px; "
-            f"padding: {padding}; font-size: {font_size}px; font-weight: 700; }}"
-            f"QPushButton:hover {{ background-color: {STATUS_DANGER_BG}; color: {STATUS_DANGER}; border-color: {STATUS_DANGER_BORDER}; }}"
-            f"QPushButton:pressed {{ background-color: {BG_SURFACE}; }}"
-        )
-    # default Raised button
-    return (
-        f"QPushButton {{ background-color: {BG_RAISED}; color: {TEXT_PRIMARY}; "
-        f"border: 1px solid {BORDER_RAISED_SIDE}; border-top: 1px solid {BORDER_BEVEL}; "
-        f"border-radius: {radius}px; padding: {padding}; font-size: {font_size}px; font-weight: {weight}; }}"
-        f"QPushButton:hover {{ background-color: {BG_HOVER}; border-color: {BORDER_BEVEL}; color: {ACCENT_AMBER_GLOW}; }}"
-        f"QPushButton:pressed {{ background-color: {BG_SURFACE}; border: 1px solid {BORDER_HAIRLINE}; }}"
-    )
-
-
-def section_header_qss(color: str = TEXT_PRIMARY) -> str:
-    """건축 계기판 라벨 감성의 대문자 섹션 헤더 스타일."""
-    return (
-        f"color: {color}; font-size: 11px; font-weight: 800; "
-        "letter-spacing: 0.9px; border: none; background: transparent;"
-    )
-
-
-def badge_qss(
-    fg: str,
-    bg: str,
-    border: str,
-    mono: bool = True,
-    left_accent: str | None = None,
-    padding: str = "2px 8px",
-    font_size: int = 10,
-) -> str:
-    """4px 절제된 모서리의 상태·카테고리 배지 QSS."""
-    font_rule = f"font-family: {FONT_MONO};" if mono else ""
-    left_rule = f"border-left: 2px solid {left_accent};" if left_accent else ""
-    return (
-        f"color: {fg}; background-color: {bg}; border: 1px solid {border}; {left_rule} "
-        f"border-radius: 4px; padding: {padding}; {font_rule} "
-        f"font-size: {font_size}px; font-weight: 700;"
-    )
+def action_pill_state(action_type_str: str) -> str:
+    """액션 유형을 Darkroom 배지 상태(`gold`/`orange`/`neutral`)로 매핑한다."""
+    t = str(action_type_str).lower()
+    if t in ("key_combo", "workspace_layout", "launch_app", "layer_shift"):
+        return "gold"
+    if t in ("zoom", "mouse_wheel", "brightness"):
+        return "orange"
+    return "neutral"
 
 
 # ============================================================================
-# 4. 중앙화된 Obsidian Tactile HUD 전역 스타일시트
+# Darkroom Filament v1.1 글로벌 QSS (모든 컴포넌트는 속성/role만 선언)
 # ============================================================================
 
-OBSIDIAN_TACTILE_HUD_QSS = f"""
-QMainWindow, QWidget#RootCentral {{
-    background-color: {BG_BASE};
-    color: {TEXT_PRIMARY};
-    font-family: {FONT_SANS};
-}}
-QDialog, QMessageBox {{
-    background-color: {BG_SURFACE};
-    color: {TEXT_PRIMARY};
-    font-family: {FONT_SANS};
-}}
-QMenu {{
-    background-color: {BG_RAISED};
-    color: {TEXT_PRIMARY};
-    border: 1px solid {BORDER_HAIRLINE};
-    border-radius: 6px;
-    padding: 4px;
-}}
-QMenu::item {{
-    padding: 6px 16px;
-    border-radius: 4px;
-}}
-QMenu::item:selected {{
-    background-color: {ACCENT_AMBER_BG};
-    color: {ACCENT_AMBER_GLOW};
-}}
-QMenu::separator {{
-    height: 1px;
-    background: {BORDER_HAIRLINE};
-    margin: 4px 8px;
-}}
-QSplitter::handle {{
-    background-color: transparent;
-}}
-QComboBox, QLineEdit {{
-    background-color: {BG_INSET};
-    color: {TEXT_PRIMARY};
-    border: 1px solid {BORDER_HAIRLINE};
-    border-top: 1px solid {BORDER_INSET_TOP};
-    border-bottom: 1px solid {BORDER_INSET_BOTTOM};
-    border-radius: 4px;
-    padding: 3px 8px;
-    font-size: 11px;
-}}
-QComboBox:hover, QLineEdit:hover {{
-    border-color: {BORDER_BEVEL};
-}}
-QComboBox:focus, QLineEdit:focus {{
-    border: 1px solid {ACCENT_AMBER};
-}}
-QComboBox::drop-down {{
-    border: none;
-    width: 18px;
-}}
-QComboBox QAbstractItemView {{
-    background-color: {BG_RAISED};
-    color: {TEXT_PRIMARY};
-    selection-background-color: {ACCENT_AMBER_BG};
-    selection-color: {ACCENT_AMBER_GLOW};
-    border: 1px solid {BORDER_HAIRLINE};
-    outline: 0px;
-}}
-QListWidget {{
-    background-color: {BG_INSET};
-    color: {TEXT_PRIMARY};
-    border: 1px solid {BORDER_HAIRLINE};
-    border-top: 1px solid {BORDER_INSET_TOP};
-    border-bottom: 1px solid {BORDER_INSET_BOTTOM};
-    border-radius: 4px;
-    font-size: 11px;
-    outline: 0px;
-}}
-QListWidget::item {{
-    padding: 6px 10px;
-    border-bottom: 1px solid #181A20;
-}}
-QListWidget::item:hover {{
-    background-color: {BG_SURFACE};
-}}
-QListWidget::item:selected {{
-    background-color: {ACCENT_AMBER_BG};
-    color: {ACCENT_AMBER_GLOW};
-    border-left: 3px solid {ACCENT_AMBER};
-}}
-QPlainTextEdit {{
-    background-color: {BG_INSET};
-    color: {TEXT_SECONDARY};
-    border: 1px solid {BORDER_HAIRLINE};
-    border-top: 1px solid {BORDER_INSET_TOP};
-    border-bottom: 1px solid {BORDER_INSET_BOTTOM};
-    border-radius: 4px;
-    font-family: {FONT_MONO};
-    font-size: 10.5px;
-}}
-QTextBrowser {{
-    background-color: {BG_INSET};
-    color: {TEXT_PRIMARY};
-    border: 1px solid {BORDER_HAIRLINE};
-    border-top: 1px solid {BORDER_INSET_TOP};
-    border-bottom: 1px solid {BORDER_INSET_BOTTOM};
-    border-radius: 6px;
-    padding: 16px;
-    font-size: 12px;
-}}
-QScrollBar:vertical {{
-    background: {BG_INSET};
-    width: 6px;
-    margin: 0px;
-}}
-QScrollBar::handle:vertical {{
-    background: {BORDER_HAIRLINE};
-    border-radius: 3px;
-    min-height: 24px;
-}}
-QScrollBar::handle:vertical:hover {{
-    background: {ACCENT_AMBER};
-}}
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
-    height: 0px;
-}}
-QScrollBar:horizontal {{
-    background: {BG_INSET};
-    height: 6px;
-    margin: 0px;
-}}
-QScrollBar::handle:horizontal {{
-    background: {BORDER_HAIRLINE};
-    border-radius: 3px;
-    min-width: 24px;
-}}
-QScrollBar::handle:horizontal:hover {{
-    background: {ACCENT_AMBER};
-}}
-QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
-    width: 0px;
-}}
-"""
+def build_qss() -> str:
+    """`TOKENS` 기반 글로벌 QSS를 생성한다 (비-토큰 파일 raw HEX/인라인 QSS 0건)."""
+    t = TOKENS
+    return f"""
+    QMainWindow#NexusMainWindow, QWidget#RootCentral {{
+        background-color: {t["--bg-canvas"]};
+        color: {t["--text-primary"]};
+        font-family: {t["--font-sans"]};
+        font-size: {t["--text-body"]};
+    }}
+    QDialog, QMessageBox {{
+        background-color: {t["--bg-surface"]};
+        color: {t["--text-primary"]};
+        font-family: {t["--font-sans"]};
+        font-size: {t["--text-body"]};
+    }}
+    QWidget {{
+        color: {t["--text-primary"]};
+        font-family: {t["--font-sans"]};
+        font-size: {t["--text-body"]};
+    }}
 
-# 하위 호환 별칭
-ARCHITECTURAL_HUD_QSS = OBSIDIAN_TACTILE_HUD_QSS
+    /* Typography Roles */
+    QLabel {{
+        background-color: transparent;
+        border: none;
+    }}
+    QLabel[role="editorial"] {{
+        font-size: {t["--text-editorial"]};
+        font-weight: 600;
+        letter-spacing: -0.5px;
+        color: {t["--text-primary"]};
+    }}
+    QLabel[role="metric"] {{
+        font-size: {t["--text-metric"]};
+        font-weight: 500;
+        font-family: {t["--font-mono"]};
+        color: {t["--text-primary"]};
+    }}
+    QLabel[role="card-title"] {{
+        font-size: {t["--text-card-title"]};
+        font-weight: 500;
+        color: {t["--text-primary"]};
+    }}
+    QLabel[role="body"] {{
+        font-size: {t["--text-body"]};
+        color: {t["--text-primary"]};
+    }}
+    QLabel[role="secondary"] {{
+        font-size: {t["--text-body"]};
+        color: {t["--text-secondary"]};
+    }}
+    QLabel[role="muted"] {{
+        font-size: {t["--text-micro"]};
+        color: {t["--text-muted"]};
+    }}
+    QLabel[role="mono-muted"] {{
+        font-family: {t["--font-mono"]};
+        font-size: {t["--text-micro"]};
+        color: {t["--text-muted"]};
+    }}
+    QLabel[role="mono-secondary"] {{
+        font-family: {t["--font-mono"]};
+        font-size: {t["--text-micro"]};
+        color: {t["--text-secondary"]};
+    }}
+    QLabel[role="mono-code"] {{
+        font-family: {t["--font-mono"]};
+        font-size: {t["--text-body"]};
+        font-weight: 600;
+        color: {t["--text-primary"]};
+    }}
+    QLabel[role="error"] {{
+        font-size: {t["--text-micro"]};
+        color: {t["--status-danger-text"]};
+    }}
+    QLabel[role="disabled"] {{
+        font-size: {t["--text-body"]};
+        color: {t["--text-disabled"]};
+    }}
+
+    /* Compact Semantic Pills */
+    QLabel[pillState="neutral"] {{
+        background-color: {t["--filament-neutral-bg"]};
+        color: {t["--text-secondary"]};
+        border: 1px solid {t["--filament-neutral-border"]};
+        border-radius: {t["--radius-xs"]};
+        padding: 2px 8px;
+        font-family: {t["--font-mono"]};
+        font-size: {t["--text-micro"]};
+        font-weight: 500;
+    }}
+    QLabel[pillState="gold"] {{
+        background-color: {t["--filament-gold-bg"]};
+        color: {t["--filament-gold"]};
+        border: 1px solid {t["--filament-gold-border"]};
+        border-radius: {t["--radius-xs"]};
+        padding: 2px 8px;
+        font-family: {t["--font-mono"]};
+        font-size: {t["--text-micro"]};
+        font-weight: 600;
+    }}
+    QLabel[pillState="orange"] {{
+        background-color: {t["--filament-orange-bg"]};
+        color: {t["--filament-orange-text"]};
+        border: 1px solid {t["--filament-orange-border"]};
+        border-radius: {t["--radius-xs"]};
+        padding: 2px 8px;
+        font-family: {t["--font-mono"]};
+        font-size: {t["--text-micro"]};
+        font-weight: 600;
+    }}
+    QLabel[pillState="red"] {{
+        background-color: {t["--filament-red-bg"]};
+        color: {t["--status-danger-text"]};
+        border: 1px solid {t["--filament-red-border"]};
+        border-radius: {t["--radius-xs"]};
+        padding: 2px 8px;
+        font-family: {t["--font-mono"]};
+        font-size: {t["--text-micro"]};
+        font-weight: 600;
+    }}
+    QLabel[role="listen-banner"] {{
+        background-color: {t["--filament-gold-bg"]};
+        color: {t["--filament-gold"]};
+        border: 1px solid {t["--filament-gold-border"]};
+        border-radius: {t["--radius-item"]};
+        padding: 6px 12px;
+        font-size: {t["--text-badge"]};
+        font-weight: 500;
+    }}
+    QLabel[role="empty-hint"] {{
+        background-color: {t["--bg-inset"]};
+        color: {t["--text-muted"]};
+        border: 1px solid {t["--border-subtle"]};
+        border-radius: {t["--radius-item"]};
+        padding: 32px;
+        font-size: {t["--text-body"]};
+    }}
+
+    /* Surface Containers */
+    QFrame[surfaceRole="sidebar"] {{
+        background-color: {t["--bg-sidebar"]};
+        border: none;
+        border-right: 1px solid {t["--border-specular"]};
+    }}
+    QFrame[surfaceRole="panel"] {{
+        background-color: {t["--bg-surface"]};
+        border: 1px solid {t["--border-specular"]};
+        border-radius: {t["--radius-card"]};
+    }}
+    QFrame[surfaceRole="inset"] {{
+        background-color: {t["--bg-inset"]};
+        border: 1px solid {t["--border-subtle"]};
+        border-radius: {t["--radius-item"]};
+    }}
+    QFrame[surfaceRole="footer-bar"] {{
+        background-color: {t["--bg-sidebar"]};
+        border: 1px solid {t["--border-subtle"]};
+        border-radius: {t["--radius-sm"]};
+    }}
+    QFrame[surfaceRole="keycap-slot"] {{
+        background-color: {t["--bg-inset"]};
+        border: 1px solid {t["--border-subtle"]};
+        border-radius: {t["--radius-item"]};
+    }}
+    QFrame[surfaceRole="device-card"] {{
+        background-color: {t["--bg-surface"]};
+        border: 1px solid {t["--border-specular"]};
+        border-radius: {t["--radius-item"]};
+    }}
+    QFrame[surfaceRole="device-card"]:hover {{
+        background-color: {t["--bg-elevated"]};
+        border: 1px solid {t["--border-specular-strong"]};
+    }}
+    QFrame[surfaceRole="device-card"][selected="true"] {{
+        background-color: {t["--bg-elevated"]};
+        border: 1px solid {t["--filament-gold-border"]};
+    }}
+    QFrame[surfaceRole="device-card"][registered="true"] {{
+        border: 1px solid {t["--border-specular-strong"]};
+    }}
+    QFrame[surfaceRole="status-pill"] {{
+        background-color: {t["--bg-surface"]};
+        border: 1px solid {t["--border-specular"]};
+        border-radius: {t["--radius-pill"]};
+    }}
+    QFrame[surfaceRole="status-pill"][pillState="gold"] {{
+        background-color: {t["--filament-gold-bg"]};
+        border: 1px solid {t["--filament-gold-border"]};
+    }}
+    QFrame[surfaceRole="status-pill"][pillState="orange"] {{
+        background-color: {t["--filament-orange-bg"]};
+        border: 1px solid {t["--filament-orange-border"]};
+    }}
+    QFrame[surfaceRole="status-pill"][pillState="red"] {{
+        background-color: {t["--filament-red-bg"]};
+        border: 1px solid {t["--filament-red-border"]};
+    }}
+    QFrame[surfaceRole="modal-card"] {{
+        background-color: {t["--bg-surface"]};
+        border: 1px solid {t["--border-specular-strong"]};
+        border-radius: {t["--radius-modal"]};
+    }}
+
+    /* Hairline Dividers */
+    QFrame[role="hairline-v"] {{
+        background-color: {t["--border-specular"]};
+        border: none;
+    }}
+    QFrame[role="hairline-h"] {{
+        background-color: {t["--border-subtle"]};
+        border: none;
+    }}
+
+    /* 7-State Buttons */
+    QPushButton {{
+        background-color: {t["--btn-ghost-bg"]};
+        color: {t["--text-primary"]};
+        border: 1px solid {t["--border-specular"]};
+        border-radius: {t["--radius-sm"]};
+        padding: 4px 12px;
+        font-size: {t["--text-body"]};
+        font-weight: 500;
+    }}
+    QPushButton:hover {{
+        background-color: {t["--btn-ghost-hover"]};
+        border-color: {t["--border-specular-strong"]};
+    }}
+    QPushButton:pressed {{
+        background-color: {t["--bg-elevated"]};
+        border-color: {t["--border-specular-strong"]};
+    }}
+    QPushButton:focus-visible {{
+        border: 2px solid {t["--filament-orange"]};
+    }}
+    QPushButton:disabled {{
+        background-color: {t["--bg-inset"]};
+        border-color: {t["--border-subtle"]};
+        color: {t["--text-disabled"]};
+    }}
+
+    /* High-Contrast Off-White Primary CTA (#F2F3F5 on #121316) */
+    QPushButton[btnRole="primary"] {{
+        background-color: {t["--cta-bg"]};
+        color: {t["--cta-text"]};
+        border: 1px solid {t["--cta-bg"]};
+        border-radius: {t["--radius-pill"]};
+        padding: 5px 14px;
+        font-size: {t["--text-body"]};
+        font-weight: 600;
+    }}
+    QPushButton[btnRole="primary"]:hover {{
+        background-color: {t["--cta-hover"]};
+        border-color: {t["--cta-hover"]};
+    }}
+    QPushButton[btnRole="primary"]:pressed {{
+        background-color: {t["--cta-pressed"]};
+        border-color: {t["--cta-pressed"]};
+    }}
+    QPushButton[btnRole="primary"]:disabled {{
+        background-color: {t["--bg-inset"]};
+        color: {t["--text-disabled"]};
+        border-color: {t["--border-subtle"]};
+    }}
+
+    /* Secondary Ghost Glass Pill */
+    QPushButton[btnRole="ghost"] {{
+        background-color: {t["--btn-ghost-bg"]};
+        color: {t["--text-primary"]};
+        border: 1px solid {t["--border-specular-strong"]};
+        border-radius: {t["--radius-pill"]};
+        padding: 4px 12px;
+        font-size: {t["--text-badge"]};
+        font-weight: 500;
+    }}
+    QPushButton[btnRole="ghost"]:hover {{
+        background-color: {t["--btn-ghost-hover"]};
+    }}
+    QPushButton[btnRole="ghost"]:pressed {{
+        background-color: {t["--bg-elevated"]};
+    }}
+
+    /* Quiet Segment / Toolbar Action */
+    QPushButton[btnRole="quiet"] {{
+        background-color: transparent;
+        color: {t["--text-secondary"]};
+        border: 1px solid transparent;
+        border-radius: {t["--radius-sm"]};
+        padding: 3px 10px;
+        font-size: {t["--text-badge"]};
+        font-weight: 500;
+    }}
+    QPushButton[btnRole="quiet"]:hover {{
+        background-color: {t["--btn-ghost-bg"]};
+        color: {t["--text-primary"]};
+    }}
+    QPushButton[btnRole="quiet"][active="true"] {{
+        background-color: {t["--bg-elevated"]};
+        border-color: {t["--border-specular-strong"]};
+        color: {t["--text-primary"]};
+    }}
+
+    /* Listen Mode Pill */
+    QPushButton[btnRole="listen"] {{
+        background-color: {t["--btn-ghost-bg"]};
+        color: {t["--text-primary"]};
+        border: 1px solid {t["--border-specular"]};
+        border-radius: {t["--radius-pill"]};
+        padding: 4px 12px;
+        font-size: {t["--text-badge"]};
+        font-weight: 500;
+    }}
+    QPushButton[btnRole="listen"]:hover {{
+        background-color: {t["--btn-ghost-hover"]};
+        border-color: {t["--border-specular-strong"]};
+    }}
+    QPushButton[btnRole="listen"][active="true"] {{
+        background-color: {t["--filament-gold-bg"]};
+        color: {t["--filament-gold"]};
+        border: 1px solid {t["--filament-gold-border"]};
+    }}
+
+    /* Danger Action (No solid bright red fill — 92% quiet darkroom preservation) */
+    QPushButton[btnRole="danger"] {{
+        background-color: {t["--filament-red-bg"]};
+        color: {t["--status-danger-text"]};
+        border: 1px solid {t["--filament-red-border"]};
+        border-radius: {t["--radius-sm"]};
+        padding: 4px 10px;
+        font-size: {t["--text-badge"]};
+        font-weight: 500;
+    }}
+    QPushButton[btnRole="danger"]:hover {{
+        background-color: {t["--bg-elevated"]};
+        border-color: {t["--filament-red"]};
+    }}
+    QPushButton[btnRole="ghost-danger"] {{
+        background-color: transparent;
+        color: {t["--text-muted"]};
+        border: 1px solid transparent;
+        border-radius: {t["--radius-xs"]};
+        padding: 2px;
+        font-size: {t["--text-card-title"]};
+        font-weight: 600;
+    }}
+    QPushButton[btnRole="ghost-danger"]:hover {{
+        background-color: {t["--filament-red-bg"]};
+        color: {t["--status-danger-text"]};
+        border-color: {t["--filament-red-border"]};
+    }}
+
+    /* Device Protection Badges */
+    QPushButton[btnRole="protect-badge"][state="protected"] {{
+        background-color: {t["--filament-orange-bg"]};
+        color: {t["--filament-orange-text"]};
+        border: 1px solid {t["--filament-orange-border"]};
+        border-radius: {t["--radius-pill"]};
+        padding: 2px 8px;
+        font-size: {t["--text-micro"]};
+        font-weight: 500;
+    }}
+    QPushButton[btnRole="protect-badge"][state="active"] {{
+        background-color: {t["--filament-gold-bg"]};
+        color: {t["--filament-gold"]};
+        border: 1px solid {t["--filament-gold-border"]};
+        border-radius: {t["--radius-pill"]};
+        padding: 2px 8px;
+        font-size: {t["--text-micro"]};
+        font-weight: 500;
+    }}
+    QPushButton[btnRole="protect-badge"][state="standby"] {{
+        background-color: {t["--filament-neutral-bg"]};
+        color: {t["--text-secondary"]};
+        border: 1px solid {t["--filament-neutral-border"]};
+        border-radius: {t["--radius-pill"]};
+        padding: 2px 8px;
+        font-size: {t["--text-micro"]};
+        font-weight: 500;
+    }}
+
+    /* Bypass Header Pill */
+    QPushButton[btnRole="bypass-pill"] {{
+        background-color: {t["--filament-gold-bg"]};
+        color: {t["--filament-gold"]};
+        border: 1px solid {t["--filament-gold-border"]};
+        border-radius: {t["--radius-pill"]};
+        padding: 3px 12px;
+        font-size: {t["--text-micro"]};
+        font-weight: 600;
+    }}
+    QPushButton[btnRole="bypass-pill"][bypass="true"] {{
+        background-color: {t["--filament-orange-bg"]};
+        color: {t["--filament-orange-text"]};
+        border: 1px solid {t["--filament-orange-border"]};
+    }}
+
+    /* Sidebar Navigation Items */
+    QPushButton[btnRole="sidebar-item"] {{
+        background-color: transparent;
+        color: {t["--text-secondary"]};
+        border: 1px solid transparent;
+        border-radius: {t["--radius-sm"]};
+        padding: 6px 10px;
+        text-align: left;
+        font-size: {t["--text-body"]};
+        font-weight: 500;
+    }}
+    QPushButton[btnRole="sidebar-item"]:hover {{
+        background-color: {t["--btn-ghost-bg"]};
+        color: {t["--text-primary"]};
+    }}
+    QPushButton[btnRole="sidebar-item"][active="true"] {{
+        background-color: {t["--bg-elevated"]};
+        color: {t["--text-primary"]};
+        border: 1px solid {t["--border-specular"]};
+    }}
+
+    /* Segmented Tabs */
+    QPushButton[btnRole="segment"] {{
+        background-color: transparent;
+        color: {t["--text-muted"]};
+        border: 1px solid transparent;
+        border-radius: {t["--radius-xs"]};
+        padding: 3px 10px;
+        font-size: {t["--text-badge"]};
+        font-weight: 500;
+    }}
+    QPushButton[btnRole="segment"]:hover {{
+        color: {t["--text-primary"]};
+    }}
+    QPushButton[btnRole="segment"][active="true"] {{
+        background-color: {t["--bg-elevated"]};
+        color: {t["--text-primary"]};
+        border: 1px solid {t["--border-specular-strong"]};
+    }}
+
+    /* Inputs */
+    QLineEdit {{
+        background-color: {t["--bg-inset"]};
+        color: {t["--text-primary"]};
+        border: 1px solid {t["--border-specular"]};
+        border-radius: {t["--radius-sm"]};
+        padding: 4px 10px;
+        font-size: {t["--text-body"]};
+    }}
+    QLineEdit:hover {{
+        border-color: {t["--border-specular-strong"]};
+    }}
+    QLineEdit:focus {{
+        border: 1px solid {t["--filament-orange-border"]};
+    }}
+    QLineEdit[state="error"] {{
+        border: 1px solid {t["--filament-red-border"]};
+        color: {t["--status-danger-text"]};
+    }}
+    QLineEdit:disabled {{
+        background-color: {t["--bg-inset"]};
+        border-color: {t["--border-subtle"]};
+        color: {t["--text-disabled"]};
+    }}
+
+    /* ComboBox */
+    QComboBox {{
+        background-color: {t["--bg-inset"]};
+        color: {t["--text-primary"]};
+        border: 1px solid {t["--border-specular"]};
+        border-radius: {t["--radius-sm"]};
+        padding: 3px 10px;
+        font-size: {t["--text-badge"]};
+    }}
+    QComboBox:hover {{
+        background-color: {t["--bg-elevated"]};
+        border-color: {t["--border-specular-strong"]};
+    }}
+    QComboBox:disabled {{
+        background-color: {t["--bg-inset"]};
+        border-color: {t["--border-subtle"]};
+        color: {t["--text-disabled"]};
+    }}
+    QComboBox::drop-down {{
+        border: none;
+        width: 18px;
+    }}
+    QComboBox QAbstractItemView {{
+        background-color: {t["--bg-surface"]};
+        border: 1px solid {t["--border-specular-strong"]};
+        border-radius: {t["--radius-sm"]};
+        padding: 4px;
+        outline: none;
+        color: {t["--text-primary"]};
+        selection-background-color: {t["--bg-elevated"]};
+        selection-color: {t["--text-primary"]};
+    }}
+
+    /* Lists, Logs & TextBrowsers */
+    QListWidget {{
+        background-color: {t["--bg-inset"]};
+        color: {t["--text-secondary"]};
+        border: 1px solid {t["--border-subtle"]};
+        border-radius: {t["--radius-item"]};
+        padding: 4px;
+        outline: none;
+        font-size: {t["--text-body"]};
+    }}
+    QListWidget::item {{
+        padding: 7px 10px;
+        border-radius: {t["--radius-xs"]};
+        margin-bottom: 2px;
+    }}
+    QListWidget::item:hover {{
+        background-color: {t["--btn-ghost-bg"]};
+        color: {t["--text-primary"]};
+    }}
+    QListWidget::item:selected {{
+        background-color: {t["--bg-elevated"]};
+        color: {t["--text-primary"]};
+        border: 1px solid {t["--border-specular"]};
+    }}
+
+    QPlainTextEdit {{
+        background-color: {t["--bg-inset"]};
+        color: {t["--text-secondary"]};
+        border: 1px solid {t["--border-subtle"]};
+        border-radius: {t["--radius-item"]};
+        padding: 8px;
+        font-family: {t["--font-mono"]};
+        font-size: {t["--text-micro"]};
+    }}
+    QTextBrowser {{
+        background-color: {t["--bg-inset"]};
+        color: {t["--text-primary"]};
+        border: 1px solid {t["--border-subtle"]};
+        border-radius: {t["--radius-item"]};
+        padding: 16px;
+        font-size: {t["--text-body"]};
+    }}
+
+    /* Radio Buttons & ScrollBars & Menus */
+    QRadioButton {{
+        color: {t["--text-primary"]};
+        font-size: {t["--text-body"]};
+        spacing: 8px;
+    }}
+    QRadioButton::indicator {{
+        width: 14px;
+        height: 14px;
+        border-radius: 7px;
+        border: 1px solid {t["--border-specular-strong"]};
+        background-color: {t["--bg-inset"]};
+    }}
+    QRadioButton::indicator:checked {{
+        border: 4px solid {t["--filament-orange"]};
+        background-color: {t["--ember-core"]};
+    }}
+
+    QScrollArea {{
+        background-color: transparent;
+        border: none;
+    }}
+    QWidget[role="transparent-bg"] {{
+        background-color: transparent;
+    }}
+
+    QScrollBar:vertical {{
+        background: transparent;
+        width: 6px;
+        margin: 4px 0px;
+    }}
+    QScrollBar::handle:vertical {{
+        background: {t["--border-specular-strong"]};
+        border-radius: {t["--radius-scroll"]};
+        min-height: 28px;
+    }}
+    QScrollBar::handle:vertical:hover {{
+        background: {t["--text-muted"]};
+    }}
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
+    QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+        height: 0px;
+        background: transparent;
+    }}
+    QScrollBar:horizontal {{
+        background: transparent;
+        height: 6px;
+        margin: 0px 4px;
+    }}
+    QScrollBar::handle:horizontal {{
+        background: {t["--border-specular-strong"]};
+        border-radius: {t["--radius-scroll"]};
+        min-width: 28px;
+    }}
+    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal,
+    QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
+        width: 0px;
+        background: transparent;
+    }}
+
+    QMenu {{
+        background-color: {t["--bg-surface"]};
+        color: {t["--text-primary"]};
+        border: 1px solid {t["--border-specular-strong"]};
+        border-radius: {t["--radius-sm"]};
+        padding: 4px;
+    }}
+    QMenu::item {{
+        padding: 6px 14px;
+        border-radius: {t["--radius-xs"]};
+    }}
+    QMenu::item:selected {{
+        background-color: {t["--bg-elevated"]};
+        color: {t["--text-primary"]};
+    }}
+    QMenu::separator {{
+        height: 1px;
+        background: {t["--border-subtle"]};
+        margin: 4px 8px;
+    }}
+    QSplitter::handle {{
+        background-color: transparent;
+    }}
+    """

@@ -1,11 +1,6 @@
-"""좌측 내비게이션 레일과 연동되는 5개 전용 워크스페이스 뷰 모듈 — Obsidian Tactile HUD.
+"""좌측 사이드바와 연동되는 5개 전용 워크스페이스 뷰 모듈 — Darkroom Filament v1.1.
 
-모든 색상·물성 스타일을 `ui/theme.py` 토큰에서 중앙 참조한다:
-- `[HARDWARE HUB]`: `DevicePanel` + 실시간 HID/키패드 신호 모니터
-- `[WORKSPACE PRESETS]`: 모니터 토폴로지, 스냅샷 캡처, 2D 블루프린트 미니맵, 포커스 메인 앱, 프리셋 I/O
-- `[MAPPING LAYER]`: 무제한 레이어 CRUD, 실행 중 `.exe` 바인딩, 레이어 `.json` I/O
-- `[SETTINGS]`: 음각 LED `SettingToggleRow` 기반 엔진/DWM/시작프로그램/Bypass 설정, 백업/복원, 로그
-- `[READ ME]`: 3개 국어(`ko`/`ja`/`en`) 내장 사용 설명서 및 비상 탈출 가이드
+컴포넌트 내 인라인 `setStyleSheet` 및 raw HEX 하드코딩 0건을 엄격히 준수한다.
 """
 
 from __future__ import annotations
@@ -13,6 +8,7 @@ from __future__ import annotations
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox,
+    QDialog,
     QFrame,
     QHBoxLayout,
     QInputDialog,
@@ -29,63 +25,60 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from core.config_store import LayerConfig
+from core.config_store import (
+    TRIGGER_MODE_FOCUS,
+    TRIGGER_MODE_PROCESS,
+    LayerConfig,
+)
 from core.context_watcher import list_running_process_names
 from core.events import InputEvent
 from core.window_orchestrator import LayoutPreset, MonitorInfo
 from ui.device_panel import DevicePanel
 from ui.i18n import LANGUAGE_LABELS, tr
-from ui.theme import (
-    ACCENT_AMBER,
-    ACCENT_CYAN,
-    BG_BASE,
-    BORDER_HAIRLINE,
-    FONT_MONO,
-    STATUS_OK,
-    STATUS_WARN,
-    TEXT_PRIMARY,
-    TEXT_SECONDARY,
-    section_header_qss,
-    surface_panel_qss,
-    tactile_button_qss,
+from ui.theme import repolish
+from ui.widgets import (
+    DarkroomSurfaceCard,
+    LayerCreateDialog,
+    MonitorMinimapWidget,
+    SettingToggleRow,
+    make_vector_icon,
 )
-from ui.widgets import MonitorMinimapWidget, SettingToggleRow, make_vector_icon
 
 
 class HardwareHubPage(QWidget):
-    """[HARDWARE HUB]: 좌측 장치 목록 + 우측 실시간 입력 신호 모니터."""
+    """[Hardware Hub]: 좌측 장치 목록 + 우측 실시간 입력 신호 모니터."""
 
     def __init__(self, device_panel: DevicePanel) -> None:
         super().__init__()
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
+        layout.setSpacing(16)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setHandleWidth(8)
         splitter.addWidget(device_panel)
 
-        monitor_frame = QFrame()
-        monitor_frame.setObjectName("SignalMonitorPanel")
-        monitor_frame.setStyleSheet(surface_panel_qss("SignalMonitorPanel", radius=6))
+        monitor_frame = DarkroomSurfaceCard(
+            warm_rim=False, radius_token="--radius-card", bg_token="--bg-surface"
+        )
         m_layout = QVBoxLayout(monitor_frame)
-        m_layout.setContentsMargins(16, 12, 16, 16)
-        m_layout.setSpacing(8)
+        m_layout.setContentsMargins(16, 14, 16, 16)
+        m_layout.setSpacing(10)
 
         hdr = QHBoxLayout()
-        self.title_lbl = QLabel("REAL-TIME SIGNAL MONITOR")
-        self.title_lbl.setStyleSheet(section_header_qss())
+        self.title_lbl = QLabel("Signal Monitor")
+        self.title_lbl.setProperty("role", "card-title")
         hdr.addWidget(self.title_lbl, 1)
 
-        self.clear_btn = QPushButton("모니터 비우기")
-        self.clear_btn.setFixedHeight(24)
+        self.clear_btn = QPushButton("비우기")
+        self.clear_btn.setProperty("btnRole", "quiet")
+        self.clear_btn.setFixedHeight(26)
         self.clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.clear_btn.setStyleSheet(tactile_button_qss("default", radius=4, padding="0 10px"))
         hdr.addWidget(self.clear_btn)
         m_layout.addLayout(hdr)
 
         self.hint_lbl = QLabel(tr("ko", "signal_monitor_hint"))
-        self.hint_lbl.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px;")
+        self.hint_lbl.setProperty("role", "secondary")
         self.hint_lbl.setWordWrap(True)
         m_layout.addWidget(self.hint_lbl)
 
@@ -122,7 +115,7 @@ class HardwareHubPage(QWidget):
 
 
 class WorkspacePresetsPage(QWidget):
-    """[WORKSPACE PRESETS]: 모니터 토폴로지, 스냅샷 캡처, 2D 미니맵, 포커스 메인 앱, 프리셋 I/O."""
+    """[Workspace Presets]: 모니터 토폴로지, 스냅샷 캡처, 2D 미니맵, 포커스 메인 앱."""
 
     topology_changed = pyqtSignal(str)
     snapshot_requested = pyqtSignal()
@@ -141,80 +134,70 @@ class WorkspacePresetsPage(QWidget):
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(12)
+        root.setSpacing(16)
 
-        # 상단: 토폴로지 감지 & 스냅샷 바
-        topo_card = QFrame()
-        topo_card.setObjectName("TopologyCard")
-        topo_card.setStyleSheet(surface_panel_qss("TopologyCard", radius=6))
+        topo_card = DarkroomSurfaceCard(
+            warm_rim=False, radius_token="--radius-card", bg_token="--bg-surface"
+        )
         t_layout = QVBoxLayout(topo_card)
-        t_layout.setContentsMargins(16, 12, 16, 12)
+        t_layout.setContentsMargins(16, 14, 16, 14)
         t_layout.setSpacing(8)
 
         t_top = QHBoxLayout()
-        t_top.setSpacing(8)
-        self.topo_title_lbl = QLabel("DISPLAY TOPOLOGY & SNAPSHOT")
-        self.topo_title_lbl.setStyleSheet(section_header_qss())
+        t_top.setSpacing(10)
+        self.topo_title_lbl = QLabel("Display Topology")
+        self.topo_title_lbl.setProperty("role", "card-title")
         t_top.addWidget(self.topo_title_lbl)
         t_top.addStretch(1)
 
         self.topology_combo = QComboBox()
-        self.topology_combo.setFixedHeight(28)
+        self.topology_combo.setFixedHeight(30)
         self.topology_combo.setMinimumWidth(260)
         self.topology_combo.currentIndexChanged.connect(self._on_topo_idx_changed)
         t_top.addWidget(self.topology_combo)
 
-        self.snapshot_btn = QPushButton("현재 창 배치 스냅샷 저장")
-        self.snapshot_btn.setIcon(make_vector_icon("snapshot", BG_BASE, 14))
+        self.snapshot_btn = QPushButton("스냅샷 저장")
+        self.snapshot_btn.setProperty("btnRole", "primary")
+        self.snapshot_btn.setIcon(make_vector_icon("snapshot", "--cta-text", 14))
         self.snapshot_btn.setIconSize(QSize(14, 14))
-        self.snapshot_btn.setFixedHeight(28)
+        self.snapshot_btn.setFixedHeight(30)
         self.snapshot_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.snapshot_btn.setStyleSheet(
-            tactile_button_qss("amber_solid", radius=4, padding="0 12px", bold=True)
-        )
         self.snapshot_btn.clicked.connect(self.snapshot_requested.emit)
         t_top.addWidget(self.snapshot_btn)
         t_layout.addLayout(t_top)
 
-        self.monitors_summary_lbl = QLabel("TOPOLOGY SCANNING...")
-        self.monitors_summary_lbl.setStyleSheet(
-            f"color: {ACCENT_CYAN}; font-family: {FONT_MONO}; font-size: 10.5px;"
-        )
+        self.monitors_summary_lbl = QLabel("Topology scanning")
+        self.monitors_summary_lbl.setProperty("role", "mono-secondary")
         t_layout.addWidget(self.monitors_summary_lbl)
         root.addWidget(topo_card)
 
-        # 하단: 좌측 프리셋 목록 / 우측 2D 미니맵 + 상세
         body_split = QSplitter(Qt.Orientation.Horizontal)
         body_split.setHandleWidth(8)
 
-        list_card = QFrame()
-        list_card.setObjectName("PresetListCard")
-        list_card.setStyleSheet(surface_panel_qss("PresetListCard", radius=6))
+        list_card = DarkroomSurfaceCard(
+            warm_rim=False, radius_token="--radius-card", bg_token="--bg-surface"
+        )
         l_layout = QVBoxLayout(list_card)
-        l_layout.setContentsMargins(16, 12, 16, 16)
-        l_layout.setSpacing(8)
+        l_layout.setContentsMargins(16, 14, 16, 16)
+        l_layout.setSpacing(10)
 
         l_hdr = QHBoxLayout()
         l_hdr.setSpacing(6)
-        self.presets_title_lbl = QLabel("SAVED LAYOUT PRESETS")
-        self.presets_title_lbl.setStyleSheet(section_header_qss())
+        self.presets_title_lbl = QLabel("Layout Presets")
+        self.presets_title_lbl.setProperty("role", "card-title")
         l_hdr.addWidget(self.presets_title_lbl, 1)
 
-        self.export_presets_btn = QPushButton("내보내기(.json)")
-        self.export_presets_btn.setFixedHeight(24)
+        self.export_presets_btn = QPushButton("내보내기")
+        self.export_presets_btn.setProperty("btnRole", "quiet")
+        self.export_presets_btn.setFixedHeight(26)
         self.export_presets_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.export_presets_btn.setStyleSheet(
-            tactile_button_qss("default", radius=4, padding="0 8px", font_size=10)
-        )
         self.export_presets_btn.clicked.connect(self.export_presets_requested.emit)
         l_hdr.addWidget(self.export_presets_btn)
 
-        self.import_presets_btn = QPushButton("가져오기(.json)")
-        self.import_presets_btn.setFixedHeight(24)
+        self.import_presets_btn = QPushButton("가져오기")
+        self.import_presets_btn.setProperty("btnRole", "quiet")
+        self.import_presets_btn.setFixedHeight(26)
         self.import_presets_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.import_presets_btn.setStyleSheet(
-            tactile_button_qss("default", radius=4, padding="0 8px", font_size=10)
-        )
         self.import_presets_btn.clicked.connect(self.import_presets_requested.emit)
         l_hdr.addWidget(self.import_presets_btn)
         l_layout.addLayout(l_hdr)
@@ -227,44 +210,39 @@ class WorkspacePresetsPage(QWidget):
         self.auto_launch_chk = SettingToggleRow(
             text="미실행 앱 자동 실행 후 정렬",
             checked=initial_auto_launch,
-            active_color=ACCENT_AMBER,
-            label_color=TEXT_SECONDARY,
+            active_color="--filament-orange",
+            label_role="secondary",
         )
         self.auto_launch_chk.toggled.connect(self.auto_launch_toggled.emit)
         l_layout.addWidget(self.auto_launch_chk)
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(8)
-        self.apply_preset_btn = QPushButton("선택 레이아웃 즉시 적용")
-        self.apply_preset_btn.setFixedHeight(28)
+        self.apply_preset_btn = QPushButton("선택 레이아웃 적용")
+        self.apply_preset_btn.setProperty("btnRole", "primary")
+        self.apply_preset_btn.setFixedHeight(30)
         self.apply_preset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.apply_preset_btn.setStyleSheet(
-            tactile_button_qss("amber", radius=4, padding="0 12px", bold=True)
-        )
         self.apply_preset_btn.clicked.connect(self._emit_apply)
         btn_row.addWidget(self.apply_preset_btn, 1)
 
         self.del_preset_btn = QPushButton("삭제")
-        self.del_preset_btn.setFixedHeight(28)
+        self.del_preset_btn.setProperty("btnRole", "danger")
+        self.del_preset_btn.setFixedHeight(30)
         self.del_preset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.del_preset_btn.setStyleSheet(
-            tactile_button_qss("danger", radius=4, padding="0 12px")
-        )
         self.del_preset_btn.clicked.connect(self._emit_delete)
         btn_row.addWidget(self.del_preset_btn)
         l_layout.addLayout(btn_row)
         body_split.addWidget(list_card)
 
-        # 우측 프리셋 상세 + 2D 아키텍처 미니맵 카드
-        detail_card = QFrame()
-        detail_card.setObjectName("PresetDetailCard")
-        detail_card.setStyleSheet(surface_panel_qss("PresetDetailCard", radius=6))
+        detail_card = DarkroomSurfaceCard(
+            warm_rim=False, radius_token="--radius-card", bg_token="--bg-surface"
+        )
         d_layout = QVBoxLayout(detail_card)
-        d_layout.setContentsMargins(16, 12, 16, 16)
-        d_layout.setSpacing(8)
+        d_layout.setContentsMargins(16, 14, 16, 16)
+        d_layout.setSpacing(10)
 
-        self.inspector_title_lbl = QLabel("PRESET INSPECTOR & 2D BLUEPRINT")
-        self.inspector_title_lbl.setStyleSheet(section_header_qss())
+        self.inspector_title_lbl = QLabel("Inspector & Blueprint")
+        self.inspector_title_lbl.setProperty("role", "card-title")
         d_layout.addWidget(self.inspector_title_lbl)
 
         self.minimap = MonitorMinimapWidget()
@@ -273,12 +251,12 @@ class WorkspacePresetsPage(QWidget):
         focus_row = QHBoxLayout()
         focus_row.setSpacing(8)
         self.focus_lbl = QLabel("정렬 후 최종 포커스 메인 앱:")
-        self.focus_lbl.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px;")
+        self.focus_lbl.setProperty("role", "secondary")
         focus_row.addWidget(self.focus_lbl)
 
         self.focus_process_combo = QComboBox()
         self.focus_process_combo.setEditable(True)
-        self.focus_process_combo.setFixedHeight(26)
+        self.focus_process_combo.setFixedHeight(28)
         self.focus_process_combo.addItem("")
         self.focus_process_combo.currentTextChanged.connect(self._on_focus_changed)
         focus_row.addWidget(self.focus_process_combo, 1)
@@ -313,7 +291,7 @@ class WorkspacePresetsPage(QWidget):
             f"M{m.index}: {m.width}×{m.height}@{m.scale_percent}% rcWork={m.work_rect}"
             for m in monitors
         )
-        self.monitors_summary_lbl.setText(f"TOPOLOGY [{fingerprint}] — {desc}")
+        self.monitors_summary_lbl.setText(f"[{fingerprint}] — {desc}")
         self.minimap.set_data(self._monitors, self._current_preset)
 
     def set_topology_choices(
@@ -387,9 +365,9 @@ class WorkspacePresetsPage(QWidget):
         self.focus_process_combo.blockSignals(False)
 
         lines = [
-            f"PRESET: {preset.name}",
-            f"TOPOLOGY: {preset.topology_fingerprint}",
-            f"FOCUS APP: {preset.focus_process or '(None)'}",
+            f"Preset: {preset.name}",
+            f"Topology: {preset.topology_fingerprint}",
+            f"Focus App: {preset.focus_process or '(None)'}",
             "-" * 52,
         ]
         for p in preset.placements:
@@ -424,9 +402,10 @@ class WorkspacePresetsPage(QWidget):
 
 
 class MappingLayerPage(QWidget):
-    """[MAPPING LAYER]: 사용자 정의 레이어 CRUD, 실행 중 `.exe` 바인딩, 레이어 `.json` I/O."""
+    """[Mapping Layer]: 사용자 정의 레이어 CRUD, 트리거 모드(`focus`/`process`), `.exe` 바인딩."""
 
-    layer_created = pyqtSignal(str)
+    layer_created = pyqtSignal(str, str)  # name, trigger_mode
+    layer_mode_changed = pyqtSignal(str, str)  # layer_name, trigger_mode
     layer_renamed = pyqtSignal(str, str)
     layer_deleted = pyqtSignal(str)
     layer_processes_updated = pyqtSignal(str, list)
@@ -435,23 +414,23 @@ class MappingLayerPage(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
+        self._lang: str = "ko"
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
+        layout.setSpacing(16)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setHandleWidth(8)
 
-        # 좌측: 레이어 목록 & 생성/이름변경/삭제/I/O
-        left_card = QFrame()
-        left_card.setObjectName("LayerListCard")
-        left_card.setStyleSheet(surface_panel_qss("LayerListCard", radius=6))
+        left_card = DarkroomSurfaceCard(
+            warm_rim=False, radius_token="--radius-card", bg_token="--bg-surface"
+        )
         l_layout = QVBoxLayout(left_card)
-        l_layout.setContentsMargins(16, 12, 16, 16)
-        l_layout.setSpacing(8)
+        l_layout.setContentsMargins(16, 14, 16, 16)
+        l_layout.setSpacing(10)
 
-        self.l_title_lbl = QLabel("CUSTOM LAYERS")
-        self.l_title_lbl.setStyleSheet(section_header_qss())
+        self.l_title_lbl = QLabel("Custom Layers")
+        self.l_title_lbl.setProperty("role", "card-title")
         l_layout.addWidget(self.l_title_lbl)
 
         self.layer_list = QListWidget()
@@ -461,69 +440,74 @@ class MappingLayerPage(QWidget):
         crud_row = QHBoxLayout()
         crud_row.setSpacing(6)
         self.add_layer_btn = QPushButton("+ 새 레이어")
-        self.add_layer_btn.setFixedHeight(28)
+        self.add_layer_btn.setProperty("btnRole", "primary")
+        self.add_layer_btn.setFixedHeight(30)
         self.add_layer_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.add_layer_btn.setStyleSheet(
-            tactile_button_qss("amber", radius=4, padding="0 10px", bold=True)
-        )
         self.add_layer_btn.clicked.connect(self._on_add_layer)
         crud_row.addWidget(self.add_layer_btn, 1)
 
         self.rename_layer_btn = QPushButton("이름 변경")
-        self.rename_layer_btn.setFixedHeight(28)
+        self.rename_layer_btn.setProperty("btnRole", "ghost")
+        self.rename_layer_btn.setFixedHeight(30)
         self.rename_layer_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.rename_layer_btn.setStyleSheet(
-            tactile_button_qss("default", radius=4, padding="0 10px")
-        )
         self.rename_layer_btn.clicked.connect(self._on_rename_layer)
         crud_row.addWidget(self.rename_layer_btn)
 
         self.del_layer_btn = QPushButton("삭제")
-        self.del_layer_btn.setFixedHeight(28)
+        self.del_layer_btn.setProperty("btnRole", "danger")
+        self.del_layer_btn.setFixedHeight(30)
         self.del_layer_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.del_layer_btn.setStyleSheet(
-            tactile_button_qss("danger", radius=4, padding="0 10px")
-        )
         self.del_layer_btn.clicked.connect(self._on_delete_layer)
         crud_row.addWidget(self.del_layer_btn)
         l_layout.addLayout(crud_row)
 
         io_row = QHBoxLayout()
         io_row.setSpacing(6)
-        self.export_layer_btn = QPushButton("레이어 내보내기(.json)")
+        self.export_layer_btn = QPushButton("레이어 내보내기")
+        self.export_layer_btn.setProperty("btnRole", "quiet")
         self.export_layer_btn.setFixedHeight(26)
         self.export_layer_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.export_layer_btn.setStyleSheet(
-            tactile_button_qss("default", radius=4, padding="0 8px", font_size=10)
-        )
         self.export_layer_btn.clicked.connect(self._on_export_layer)
         io_row.addWidget(self.export_layer_btn, 1)
 
-        self.import_layer_btn = QPushButton("레이어 불러오기(.json)")
+        self.import_layer_btn = QPushButton("레이어 불러오기")
+        self.import_layer_btn.setProperty("btnRole", "quiet")
         self.import_layer_btn.setFixedHeight(26)
         self.import_layer_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.import_layer_btn.setStyleSheet(
-            tactile_button_qss("default", radius=4, padding="0 8px", font_size=10)
-        )
         self.import_layer_btn.clicked.connect(self.import_layer_requested.emit)
         io_row.addWidget(self.import_layer_btn, 1)
         l_layout.addLayout(io_row)
         splitter.addWidget(left_card)
 
-        # 우측: 선택 레이어에 .exe 프로세스 바인딩
-        right_card = QFrame()
-        right_card.setObjectName("LayerProcessBindCard")
-        right_card.setStyleSheet(surface_panel_qss("LayerProcessBindCard", radius=6))
+        right_card = DarkroomSurfaceCard(
+            warm_rim=False, radius_token="--radius-card", bg_token="--bg-surface"
+        )
         r_layout = QVBoxLayout(right_card)
-        r_layout.setContentsMargins(16, 12, 16, 16)
-        r_layout.setSpacing(8)
+        r_layout.setContentsMargins(16, 14, 16, 16)
+        r_layout.setSpacing(10)
 
-        self.bind_title_lbl = QLabel("AUTO-SWITCH PROCESS BINDING (.exe)")
-        self.bind_title_lbl.setStyleSheet(section_header_qss())
+        self.bind_title_lbl = QLabel("Process Binding (.exe)")
+        self.bind_title_lbl.setProperty("role", "card-title")
         r_layout.addWidget(self.bind_title_lbl)
 
-        self.bind_hint_lbl = QLabel(tr("ko", "layer_bind_hint"))
-        self.bind_hint_lbl.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px;")
+        mode_row = QHBoxLayout()
+        mode_row.setSpacing(8)
+        self.mode_lbl = QLabel(tr(self._lang, "layer_mode_label"))
+        self.mode_lbl.setProperty("role", "secondary")
+        mode_row.addWidget(self.mode_lbl)
+
+        self.mode_combo = QComboBox()
+        self.mode_combo.setFixedHeight(28)
+        self.mode_combo.setMinimumWidth(220)
+        self.mode_combo.addItem(tr(self._lang, "layer_mode_focus_desc"), TRIGGER_MODE_FOCUS)
+        self.mode_combo.addItem(tr(self._lang, "layer_mode_process_desc"), TRIGGER_MODE_PROCESS)
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_combo_changed)
+        mode_row.addWidget(self.mode_combo)
+        mode_row.addStretch(1)
+        r_layout.addLayout(mode_row)
+
+        self.bind_hint_lbl = QLabel(tr(self._lang, "layer_bind_hint"))
+        self.bind_hint_lbl.setProperty("role", "secondary")
         self.bind_hint_lbl.setWordWrap(True)
         r_layout.addWidget(self.bind_hint_lbl)
 
@@ -533,9 +517,7 @@ class MappingLayerPage(QWidget):
         bound_col = QVBoxLayout()
         bound_col.setSpacing(6)
         self.bound_lbl = QLabel("바인딩된 프로세스 (.exe)")
-        self.bound_lbl.setStyleSheet(
-            f"color: {ACCENT_AMBER}; font-size: 11px; font-weight: 700;"
-        )
+        self.bound_lbl.setProperty("role", "body")
         bound_col.addWidget(self.bound_lbl)
 
         self.bound_proc_list = QListWidget()
@@ -544,24 +526,21 @@ class MappingLayerPage(QWidget):
         manual_row = QHBoxLayout()
         manual_row.setSpacing(6)
         self.manual_exe_edit = QLineEdit()
+        self.manual_exe_edit.setFixedHeight(28)
         self.manual_exe_edit.setPlaceholderText("Revit.exe, acad.exe")
         manual_row.addWidget(self.manual_exe_edit, 1)
 
         self.add_exe_btn = QPushButton("추가")
-        self.add_exe_btn.setFixedHeight(26)
+        self.add_exe_btn.setProperty("btnRole", "ghost")
+        self.add_exe_btn.setFixedHeight(28)
         self.add_exe_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.add_exe_btn.setStyleSheet(
-            tactile_button_qss("amber", radius=4, padding="0 10px", bold=True)
-        )
         self.add_exe_btn.clicked.connect(self._on_add_manual_exe)
         manual_row.addWidget(self.add_exe_btn)
 
         self.rem_exe_btn = QPushButton("해제")
-        self.rem_exe_btn.setFixedHeight(26)
+        self.rem_exe_btn.setProperty("btnRole", "danger")
+        self.rem_exe_btn.setFixedHeight(28)
         self.rem_exe_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.rem_exe_btn.setStyleSheet(
-            tactile_button_qss("danger", radius=4, padding="0 10px")
-        )
         self.rem_exe_btn.clicked.connect(self._on_remove_selected_exe)
         manual_row.addWidget(self.rem_exe_btn)
         bound_col.addLayout(manual_row)
@@ -570,18 +549,14 @@ class MappingLayerPage(QWidget):
         run_col = QVBoxLayout()
         run_col.setSpacing(6)
         run_hdr = QHBoxLayout()
-        self.run_lbl = QLabel("현재 실행 중인 프로세스")
-        self.run_lbl.setStyleSheet(
-            f"color: {ACCENT_CYAN}; font-size: 11px; font-weight: 700;"
-        )
+        self.run_lbl = QLabel("실행 중인 프로세스")
+        self.run_lbl.setProperty("role", "body")
         run_hdr.addWidget(self.run_lbl, 1)
 
         self.refresh_proc_btn = QPushButton("새로고침")
-        self.refresh_proc_btn.setFixedHeight(22)
+        self.refresh_proc_btn.setProperty("btnRole", "quiet")
+        self.refresh_proc_btn.setFixedHeight(24)
         self.refresh_proc_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.refresh_proc_btn.setStyleSheet(
-            tactile_button_qss("default", radius=4, padding="0 8px", font_size=10)
-        )
         self.refresh_proc_btn.clicked.connect(self.refresh_running_processes)
         run_hdr.addWidget(self.refresh_proc_btn)
         run_col.addLayout(run_hdr)
@@ -590,12 +565,10 @@ class MappingLayerPage(QWidget):
         self.running_proc_list.itemDoubleClicked.connect(lambda _i: self._on_bind_running_exe())
         run_col.addWidget(self.running_proc_list, 1)
 
-        self.bind_btn = QPushButton("← 선택 프로세스를 레이어에 바인딩")
-        self.bind_btn.setFixedHeight(26)
+        self.bind_btn = QPushButton("← 선택 프로세스 바인딩")
+        self.bind_btn.setProperty("btnRole", "primary")
+        self.bind_btn.setFixedHeight(28)
         self.bind_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.bind_btn.setStyleSheet(
-            tactile_button_qss("amber", radius=4, padding="0 10px", bold=True)
-        )
         self.bind_btn.clicked.connect(self._on_bind_running_exe)
         run_col.addWidget(self.bind_btn)
         cols.addLayout(run_col, 1)
@@ -609,19 +582,28 @@ class MappingLayerPage(QWidget):
         self._configs_by_name: dict[str, LayerConfig] = {}
 
     def apply_language(self, lang: str) -> None:
+        self._lang = lang
         self.l_title_lbl.setText(tr(lang, "layer_title"))
         self.add_layer_btn.setText(tr(lang, "layer_add"))
         self.rename_layer_btn.setText(tr(lang, "layer_rename"))
         self.del_layer_btn.setText(tr(lang, "layer_delete"))
         self.export_layer_btn.setText(tr(lang, "layer_export"))
         self.import_layer_btn.setText(tr(lang, "layer_import"))
-        self.bind_hint_lbl.setText(tr(lang, "layer_bind_hint"))
+        self.mode_lbl.setText(tr(lang, "layer_mode_label"))
+        self.mode_combo.blockSignals(True)
+        self.mode_combo.setItemText(0, tr(lang, "layer_mode_focus_desc"))
+        self.mode_combo.setItemText(1, tr(lang, "layer_mode_process_desc"))
+        self.mode_combo.blockSignals(False)
         self.bound_lbl.setText(tr(lang, "layer_bound_label"))
         self.add_exe_btn.setText(tr(lang, "layer_add_exe"))
         self.rem_exe_btn.setText(tr(lang, "layer_rem_exe"))
         self.run_lbl.setText(tr(lang, "layer_running_label"))
         self.refresh_proc_btn.setText(tr(lang, "layer_refresh_proc"))
         self.bind_btn.setText(tr(lang, "layer_bind_btn"))
+        if self._configs_by_name:
+            self.refresh_layers(list(self._configs_by_name.values()))
+        else:
+            self.bind_hint_lbl.setText(tr(lang, "layer_bind_hint"))
 
     def refresh_layers(self, configs: list[LayerConfig]) -> None:
         cur = self.selected_layer_name()
@@ -630,8 +612,13 @@ class MappingLayerPage(QWidget):
         self.layer_list.clear()
         restore_row = 0
         for row, lc in enumerate(configs):
+            mode_tag = (
+                tr(self._lang, "layer_mode_process_tag")
+                if lc.trigger_mode == TRIGGER_MODE_PROCESS
+                else tr(self._lang, "layer_mode_focus_tag")
+            )
             proc_txt = ", ".join(lc.processes) if lc.processes else "default fallback"
-            item = QListWidgetItem(f"{lc.name}   [{proc_txt}]")
+            item = QListWidgetItem(f"{lc.name}  [{mode_tag}]  ({proc_txt})")
             item.setData(Qt.ItemDataRole.UserRole, lc.name)
             self.layer_list.addItem(item)
             if lc.name == cur:
@@ -660,18 +647,55 @@ class MappingLayerPage(QWidget):
     def _sync_bound_processes(self, lc: LayerConfig | None) -> None:
         self.bound_proc_list.clear()
         if lc is None:
-            self.bind_title_lbl.setText("AUTO-SWITCH PROCESS BINDING (.exe)")
+            self.bind_title_lbl.setText("Process Binding (.exe)")
+            self.mode_combo.setEnabled(False)
+            self.bind_hint_lbl.setText(tr(self._lang, "layer_bind_hint"))
+            self.bind_hint_lbl.setProperty("role", "secondary")
+            repolish(self.bind_hint_lbl)
             return
-        self.bind_title_lbl.setText(f"AUTO-SWITCH PROCESS BINDING — [{lc.name}]")
+
+        is_process = lc.trigger_mode == TRIGGER_MODE_PROCESS
+        mode_tag = (
+            tr(self._lang, "layer_mode_process_tag")
+            if is_process
+            else tr(self._lang, "layer_mode_focus_tag")
+        )
+        self.bind_title_lbl.setText(f"Process Binding — {lc.name} ({mode_tag})")
+
+        self.mode_combo.blockSignals(True)
+        idx = self.mode_combo.findData(lc.trigger_mode)
+        self.mode_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.mode_combo.setEnabled(lc.name != "default")
+        self.mode_combo.blockSignals(False)
+
+        if is_process:
+            self.bind_hint_lbl.setText(tr(self._lang, "layer_bind_hint_process"))
+            self.bind_hint_lbl.setProperty("pillState", "gold")
+            self.manual_exe_edit.setPlaceholderText("Revit.exe (단일 .exe)")
+        else:
+            self.bind_hint_lbl.setText(tr(self._lang, "layer_bind_hint"))
+            self.bind_hint_lbl.setProperty("pillState", "")
+            self.bind_hint_lbl.setProperty("role", "secondary")
+            self.manual_exe_edit.setPlaceholderText("Revit.exe, acad.exe")
+        repolish(self.bind_hint_lbl)
+
         for proc in lc.processes:
             self.bound_proc_list.addItem(proc)
 
+    def _on_mode_combo_changed(self, idx: int) -> None:
+        name = self.selected_layer_name()
+        if not name or name == "default" or idx < 0:
+            return
+        mode = str(self.mode_combo.itemData(idx) or TRIGGER_MODE_FOCUS)
+        lc = self._configs_by_name.get(name)
+        if lc is not None and lc.trigger_mode == mode:
+            return
+        self.layer_mode_changed.emit(name, mode)
+
     def _on_add_layer(self) -> None:
-        name, ok = QInputDialog.getText(
-            self, "새 레이어 생성", "생성할 레이어 이름을 입력하세요 (예: cad, photo):"
-        )
-        if ok and name.strip():
-            self.layer_created.emit(name.strip())
+        dlg = LayerCreateDialog(lang=self._lang, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.layer_name():
+            self.layer_created.emit(dlg.layer_name(), dlg.trigger_mode())
 
     def _on_rename_layer(self) -> None:
         old_name = self.selected_layer_name()
@@ -750,7 +774,7 @@ class MappingLayerPage(QWidget):
 
 
 class SettingsPage(QWidget):
-    """[SETTINGS]: 음각 LED 토글 기반 엔진/DWM/시작프로그램/Bypass/백업·복원/다국어."""
+    """[Settings]: Darkroom 토글 기반 엔진/DWM/시작프로그램/Bypass/백업·복원/다국어."""
 
     prefer_kernel_toggled = pyqtSignal(bool)
     minimize_tray_toggled = pyqtSignal(bool)
@@ -781,26 +805,26 @@ class SettingsPage(QWidget):
         self._lang = language if language in LANGUAGE_LABELS else "ko"
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(12)
+        root.setSpacing(16)
 
-        cfg_card = QFrame()
-        cfg_card.setObjectName("SettingsCard")
-        cfg_card.setStyleSheet(surface_panel_qss("SettingsCard", radius=6))
+        cfg_card = DarkroomSurfaceCard(
+            warm_rim=False, radius_token="--radius-card", bg_token="--bg-surface"
+        )
         c_layout = QVBoxLayout(cfg_card)
-        c_layout.setContentsMargins(16, 12, 16, 16)
+        c_layout.setContentsMargins(16, 14, 16, 16)
         c_layout.setSpacing(6)
 
         top_bar = QHBoxLayout()
         self.title_lbl = QLabel()
-        self.title_lbl.setStyleSheet(section_header_qss())
+        self.title_lbl.setProperty("role", "card-title")
         top_bar.addWidget(self.title_lbl, 1)
 
         self.lang_lbl = QLabel()
-        self.lang_lbl.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px;")
+        self.lang_lbl.setProperty("role", "secondary")
         top_bar.addWidget(self.lang_lbl)
 
         self.lang_combo = QComboBox()
-        self.lang_combo.setFixedHeight(26)
+        self.lang_combo.setFixedHeight(28)
         for code, label in LANGUAGE_LABELS.items():
             self.lang_combo.addItem(label, code)
         idx = self.lang_combo.findData(self._lang)
@@ -810,111 +834,104 @@ class SettingsPage(QWidget):
         c_layout.addLayout(top_bar)
 
         self.prefer_kernel_chk = SettingToggleRow(
-            checked=prefer_kernel, active_color=STATUS_OK
+            checked=prefer_kernel, active_color="--filament-gold"
         )
         self.prefer_kernel_chk.toggled.connect(self.prefer_kernel_toggled.emit)
         c_layout.addWidget(self.prefer_kernel_chk)
 
         self.minimize_tray_chk = SettingToggleRow(
-            checked=minimize_tray, active_color=ACCENT_AMBER
+            checked=minimize_tray, active_color="--filament-orange"
         )
         self.minimize_tray_chk.toggled.connect(self.minimize_tray_toggled.emit)
         c_layout.addWidget(self.minimize_tray_chk)
 
         self.auto_switch_layer_chk = SettingToggleRow(
-            checked=auto_switch_layer, active_color=ACCENT_CYAN
+            checked=auto_switch_layer, active_color="--filament-orange"
         )
         self.auto_switch_layer_chk.toggled.connect(self.auto_switch_layer_toggled.emit)
         c_layout.addWidget(self.auto_switch_layer_chk)
 
         self.compensate_dwm_chk = SettingToggleRow(
-            checked=compensate_dwm, active_color=ACCENT_CYAN
+            checked=compensate_dwm, active_color="--filament-orange"
         )
         self.compensate_dwm_chk.toggled.connect(self.compensate_dwm_toggled.emit)
         c_layout.addWidget(self.compensate_dwm_chk)
 
         self.run_at_startup_chk = SettingToggleRow(
-            checked=run_at_startup, active_color=ACCENT_AMBER, label_color=TEXT_PRIMARY
+            checked=run_at_startup, active_color="--filament-gold"
         )
         self.run_at_startup_chk.toggled.connect(self.run_at_startup_toggled.emit)
         c_layout.addWidget(self.run_at_startup_chk)
 
         self.start_minimized_chk = SettingToggleRow(
-            checked=start_minimized, active_color=ACCENT_AMBER, label_color=TEXT_SECONDARY
+            checked=start_minimized, active_color="--filament-orange", label_role="secondary"
         )
         self.start_minimized_chk.toggled.connect(self.start_minimized_toggled.emit)
         c_layout.addWidget(self.start_minimized_chk)
 
         self.bypass_chk = SettingToggleRow(
-            checked=bypass_remapping, active_color=STATUS_WARN, label_color=STATUS_WARN
+            checked=bypass_remapping, active_color="--filament-red"
         )
         self.bypass_chk.toggled.connect(self.bypass_toggled.emit)
         c_layout.addWidget(self.bypass_chk)
 
         sep = QFrame()
+        sep.setProperty("role", "hairline-h")
         sep.setFixedHeight(1)
-        sep.setStyleSheet(f"background-color: {BORDER_HAIRLINE};")
         c_layout.addWidget(sep)
 
         path_row = QHBoxLayout()
-        path_row.setSpacing(6)
+        path_row.setSpacing(8)
         self.path_lbl = QLabel()
-        self.path_lbl.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 11px;")
+        self.path_lbl.setProperty("role", "secondary")
         path_row.addWidget(self.path_lbl)
 
         self.config_path_edit = QLineEdit(config_path)
+        self.config_path_edit.setFixedHeight(28)
         self.config_path_edit.setReadOnly(True)
         path_row.addWidget(self.config_path_edit, 1)
 
         self.open_dir_btn = QPushButton()
-        self.open_dir_btn.setIcon(make_vector_icon("folder", ACCENT_AMBER, 13))
+        self.open_dir_btn.setProperty("btnRole", "ghost")
+        self.open_dir_btn.setIcon(make_vector_icon("folder", "--text-secondary", 13))
         self.open_dir_btn.setIconSize(QSize(13, 13))
         self.open_dir_btn.setFixedHeight(28)
         self.open_dir_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.open_dir_btn.setStyleSheet(
-            tactile_button_qss("default", radius=4, padding="0 10px", bold=True)
-        )
         self.open_dir_btn.clicked.connect(self.open_config_folder_requested.emit)
         path_row.addWidget(self.open_dir_btn)
 
         self.backup_config_btn = QPushButton()
+        self.backup_config_btn.setProperty("btnRole", "ghost")
         self.backup_config_btn.setFixedHeight(28)
         self.backup_config_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.backup_config_btn.setStyleSheet(
-            tactile_button_qss("default", radius=4, padding="0 10px")
-        )
         self.backup_config_btn.clicked.connect(self.backup_config_requested.emit)
         path_row.addWidget(self.backup_config_btn)
 
         self.restore_config_btn = QPushButton()
+        self.restore_config_btn.setProperty("btnRole", "ghost")
         self.restore_config_btn.setFixedHeight(28)
         self.restore_config_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.restore_config_btn.setStyleSheet(
-            tactile_button_qss("default", radius=4, padding="0 10px")
-        )
         self.restore_config_btn.clicked.connect(self.restore_config_requested.emit)
         path_row.addWidget(self.restore_config_btn)
 
         self.save_btn = QPushButton()
+        self.save_btn.setProperty("btnRole", "primary")
         self.save_btn.setFixedHeight(28)
         self.save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.save_btn.setStyleSheet(
-            tactile_button_qss("amber_solid", radius=4, padding="0 12px", bold=True)
-        )
         self.save_btn.clicked.connect(self.save_now_requested.emit)
         path_row.addWidget(self.save_btn)
         c_layout.addLayout(path_row)
         root.addWidget(cfg_card)
 
-        log_card = QFrame()
-        log_card.setObjectName("SettingsLogCard")
-        log_card.setStyleSheet(surface_panel_qss("SettingsLogCard", radius=6))
+        log_card = DarkroomSurfaceCard(
+            warm_rim=False, radius_token="--radius-card", bg_token="--bg-surface"
+        )
         l_layout = QVBoxLayout(log_card)
-        l_layout.setContentsMargins(16, 12, 16, 16)
+        l_layout.setContentsMargins(16, 14, 16, 16)
         l_layout.setSpacing(8)
 
         self.log_hdr = QLabel()
-        self.log_hdr.setStyleSheet(section_header_qss())
+        self.log_hdr.setProperty("role", "card-title")
         l_layout.addWidget(self.log_hdr)
 
         self.log_view = QPlainTextEdit()
@@ -979,16 +996,16 @@ class SettingsPage(QWidget):
 
 
 class ReadMePage(QWidget):
-    """[READ ME]: 3개 국어 내장 사용 설명서, ESC+F12 비상 탈출 안내, 하드웨어 가이드."""
+    """[Read Me]: 3개 국어 내장 사용 설명서 및 비상 탈출 가이드."""
 
     def __init__(self) -> None:
         super().__init__()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        card = QFrame()
-        card.setObjectName("ReadMeCard")
-        card.setStyleSheet(surface_panel_qss("ReadMeCard", radius=6))
+        card = DarkroomSurfaceCard(
+            warm_rim=False, radius_token="--radius-card", bg_token="--bg-surface"
+        )
         c_layout = QVBoxLayout(card)
         c_layout.setContentsMargins(16, 16, 16, 16)
 

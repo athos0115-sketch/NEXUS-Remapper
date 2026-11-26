@@ -1,12 +1,18 @@
-"""PyQt6 좌측 220px 내비게이션 레일 + 6뷰 전환형 Obsidian Tactile HUD 커맨드 센터."""
+"""PyQt6 Quiet Pro 2-Zone Darkroom Filament v1.1 메인 콘솔 윈도우.
+
+- 92% 매트 흑요석/차콜 그레이 + 8% Thermal Filament (Gold / Solar Orange / Vermilion Red)
+- 1px Warm Rim-Light는 최상단 커맨드 바(`TopCommandBar`)와 우측 메인 워크스페이스 프레임(`WorkspaceFocalShell`) 2곳에만 제한 적용
+- 컴포넌트 인라인 `setStyleSheet` 및 Qt 위젯 드롭 섀도우 이펙트 0건
+- 창/작업표시줄/트레이 전체에 `assets/app_icon.ico` (Darkroom Mode B) 일괄 적용
+"""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, Qt, QUrl, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QAction, QColor, QDesktopServices, QIcon, QPainter, QPixmap
+from PyQt6.QtCore import QObject, Qt, QTimer, QUrl, pyqtSignal, pyqtSlot
+from PyQt6.QtGui import QAction, QDesktopServices, QIcon
 from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -27,12 +33,17 @@ from PyQt6.QtWidgets import (
 
 from core.actions import ActionExecutor
 from core.config_store import (
+    TRIGGER_MODE_FOCUS,
     ConfigStore,
     MappingRule,
     is_windows_startup_enabled,
     set_windows_startup,
 )
-from core.context_watcher import ContextWatcher, ForegroundContext
+from core.context_watcher import (
+    ContextWatcher,
+    ForegroundContext,
+    list_running_process_names,
+)
 from core.device_registry import DeviceInfo, DeviceRegistry, DeviceScanDiff
 from core.engine_manager import EngineManager, EngineMode
 from core.events import InputEvent
@@ -41,37 +52,18 @@ from ui.device_panel import DevicePanel
 from ui.i18n import tr
 from ui.mapping_cards import MappingCardsPanel
 from ui.theme import (
-    ACCENT_AMBER,
-    ACCENT_AMBER_BG,
-    ACCENT_AMBER_BORDER,
-    ACCENT_AMBER_GLOW,
-    ACCENT_CYAN,
-    ACCENT_CYAN_BG,
-    ACCENT_CYAN_BORDER,
-    BG_BASE,
-    BG_INSET,
-    BORDER_HAIRLINE,
-    FONT_MONO,
-    OBSIDIAN_TACTILE_HUD_QSS,
-    STATUS_DANGER,
-    STATUS_DANGER_BG,
-    STATUS_DANGER_BORDER,
-    STATUS_OK,
-    STATUS_OK_BG,
-    STATUS_OK_BORDER,
-    STATUS_WARN,
-    STATUS_WARN_BG,
-    STATUS_WARN_BORDER,
-    TEXT_MUTED,
-    TEXT_PRIMARY,
-    TEXT_SECONDARY,
     apply_win11_dark_titlebar,
-    badge_qss,
-    inset_slot_qss,
-    surface_panel_qss,
-    tactile_button_qss,
+    build_qss,
+    load_app_icon,
+    repolish,
 )
-from ui.widgets import LedStatusPill, NavRailButton
+from ui.widgets import (
+    DarkroomSurfaceCard,
+    EmberCoreDot,
+    LedStatusPill,
+    NavRailButton,
+    ProcessLayerConflictDialog,
+)
 from ui.workspace_views import (
     HardwareHubPage,
     MappingLayerPage,
@@ -80,28 +72,19 @@ from ui.workspace_views import (
     WorkspacePresetsPage,
 )
 
-_NAV_ITEMS: tuple[tuple[str, str, str], ...] = (
-    ("01", "HARDWARE HUB", "hub"),
-    ("02", "WORKSPACE PRESETS", "workspace"),
-    ("03", "MAPPING LAYER", "layers"),
-    ("04", "MAPPING MATRIX", "matrix"),
-    ("05", "SETTINGS", "settings"),
-    ("06", "READ ME", "book"),
+_NAV_ITEMS: tuple[tuple[str, str], ...] = (
+    ("Hardware Hub", "hub"),
+    ("Workspace Presets", "workspace"),
+    ("Mapping Layer", "layers"),
+    ("Mapping Matrix", "matrix"),
+    ("Settings", "settings"),
+    ("Read Me", "book"),
 )
 
 
 def _create_nexus_tray_icon() -> QIcon:
-    """외부 아이콘 파일 없이 Obsidian/Amber/Cyan 배지 트레이 아이콘을 동적 생성한다."""
-    pix = QPixmap(32, 32)
-    pix.fill(QColor(BG_BASE))
-    painter = QPainter(pix)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.setPen(QColor(ACCENT_AMBER))
-    painter.drawRoundedRect(2, 2, 28, 28, 5, 5)
-    painter.setPen(QColor(ACCENT_CYAN))
-    painter.drawText(pix.rect(), Qt.AlignmentFlag.AlignCenter, "NX")
-    painter.end()
-    return QIcon(pix)
+    """번들된 Darkroom Mode B 멀티 해상도 앱 아이콘을 로드한다."""
+    return load_app_icon()
 
 
 class NexusSignalBridge(QObject):
@@ -116,7 +99,7 @@ class NexusSignalBridge(QObject):
 
 
 class MainWindow(QMainWindow):
-    """NEXUS Remapper 6뷰 전환형 Obsidian Tactile HUD 커맨드 센터."""
+    """NEXUS Remapper 6뷰 전환형 Darkroom Filament v1.1 커맨드 센터."""
 
     def __init__(
         self,
@@ -129,6 +112,7 @@ class MainWindow(QMainWindow):
         bridge: NexusSignalBridge | None = None,
     ) -> None:
         super().__init__()
+        self.setObjectName("NexusMainWindow")
         self.config_store = config_store
         self.registry = registry
         self.engine_manager = engine_manager
@@ -139,8 +123,15 @@ class MainWindow(QMainWindow):
 
         self._active_profile: str = "default"
         self._active_process: str = "-"
+        self._active_process_layer_override: str | None = None
+        self._last_conflict_combo: frozenset[str] | None = None
+        self._conflict_dialog: ProcessLayerConflictDialog | None = None
+        self._process_poll_timer: QTimer = QTimer(self)
+        self._process_poll_timer.setInterval(1500)
+        self._process_poll_timer.timeout.connect(self._on_process_poll_tick)
         self._force_quit: bool = False
         self._language: str = str(self.config_store.settings.get("language", "ko"))
+        self._app_icon: QIcon = load_app_icon()
         self._tray_icon: QSystemTrayIcon | None = None
         self._tray_menu: QMenu | None = None
         self._tray_status_action: QAction | None = None
@@ -151,8 +142,13 @@ class MainWindow(QMainWindow):
         self.nav_buttons: list[NavRailButton] = []
 
         self.setWindowTitle("NEXUS Remapper & Workspace Orchestrator")
-        self.resize(1380, 840)
-        self.setStyleSheet(OBSIDIAN_TACTILE_HUD_QSS)
+        if not self._app_icon.isNull():
+            self.setWindowIcon(self._app_icon)
+            app = QApplication.instance()
+            if app is not None and app.windowIcon().isNull():
+                app.setWindowIcon(self._app_icon)
+        self.resize(1360, 840)
+        self.setStyleSheet(build_qss())
 
         self._build_ui()
         self._wire_signals()
@@ -169,127 +165,36 @@ class MainWindow(QMainWindow):
         central.setObjectName("RootCentral")
         self.setCentralWidget(central)
 
-        root = QVBoxLayout(central)
-        root.setContentsMargins(12, 8, 12, 8)
-        root.setSpacing(8)
+        root = QHBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        # ── 1. 최상단 통합 커맨드 헤더 (44px, Amber 타이틀 + Cyan 텔레메트리) ──
-        header = QFrame()
-        header.setObjectName("TopHeaderBar")
-        header.setFixedHeight(44)
-        header.setStyleSheet(surface_panel_qss("TopHeaderBar", radius=6))
-        h_layout = QHBoxLayout(header)
-        h_layout.setContentsMargins(16, 0, 12, 0)
-        h_layout.setSpacing(10)
-
-        brand = QLabel("NEXUS")
-        brand.setStyleSheet(
-            f"color: {TEXT_PRIMARY}; font-size: 13px; font-weight: 800; letter-spacing: 2.2px;"
-        )
-        h_layout.addWidget(brand)
-
-        sub_brand = QLabel("TACTILE HUD")
-        sub_brand.setStyleSheet(
-            f"color: {ACCENT_AMBER}; font-family: {FONT_MONO}; "
-            "font-size: 9.5px; font-weight: 800; letter-spacing: 1.2px;"
-        )
-        h_layout.addWidget(sub_brand)
-
-        sep = QFrame()
-        sep.setFixedSize(1, 18)
-        sep.setStyleSheet(f"background-color: {BORDER_HAIRLINE};")
-        h_layout.addWidget(sep)
-
-        # 엔진 상태 6px LED 배지 (`LedStatusPill`)
-        self.engine_pill = LedStatusPill(self.engine_manager.status_badge, color=STATUS_WARN)
-        self.engine_led = self.engine_pill.led
-        self.engine_badge = self.engine_pill.text_label
-        h_layout.addWidget(self.engine_pill)
-
-        # 현재 활성 .exe 표시기 (Telemetry Cyan)
-        self.active_proc_lbl = QLabel("ACTIVE: - [default]")
-        self.active_proc_lbl.setFixedHeight(26)
-        self.active_proc_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.active_proc_lbl.setStyleSheet(
-            badge_qss(
-                fg=ACCENT_CYAN,
-                bg=ACCENT_CYAN_BG,
-                border=ACCENT_CYAN_BORDER,
-                mono=True,
-                padding="0 10px",
-                font_size=10,
-            )
-        )
-        h_layout.addWidget(self.active_proc_lbl)
-
-        # 현재 적용 레이어 배지 (Primary Amber)
-        self.active_layer_lbl = QLabel(f"LAYER: {self.executor.active_layer}")
-        self.active_layer_lbl.setFixedHeight(26)
-        self.active_layer_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.active_layer_lbl.setStyleSheet(
-            badge_qss(
-                fg=ACCENT_AMBER_GLOW,
-                bg=ACCENT_AMBER_BG,
-                border=ACCENT_AMBER_BORDER,
-                mono=True,
-                padding="0 10px",
-                font_size=10,
-            )
-        )
-        h_layout.addWidget(self.active_layer_lbl)
-
-        # 리매핑 일시 정지(Bypass) 토글 배지
-        self.bypass_btn = QPushButton()
-        self.bypass_btn.setCheckable(True)
-        self.bypass_btn.setFixedHeight(26)
-        self.bypass_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.bypass_btn.toggled.connect(self._on_bypass_toggled)
-        h_layout.addWidget(self.bypass_btn)
-
-        h_layout.addStretch(1)
-
-        # 모니터 환경 상태 표시기
-        self.header_topology_lbl = QLabel("MONITOR: AUTO")
-        self.header_topology_lbl.setFixedHeight(26)
-        self.header_topology_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.header_topology_lbl.setStyleSheet(
-            badge_qss(
-                fg=TEXT_SECONDARY,
-                bg=BG_INSET,
-                border=BORDER_HAIRLINE,
-                mono=True,
-                padding="0 10px",
-                font_size=10,
-            )
-        )
-        h_layout.addWidget(self.header_topology_lbl)
-
-        root.addWidget(header)
-
-        # ── 2. 중앙 본문: 좌측 220px 내비게이션 레일 + 우측 6뷰 QStackedWidget ──
-        body_row = QHBoxLayout()
-        body_row.setContentsMargins(0, 0, 0, 0)
-        body_row.setSpacing(12)
-
+        # ── 1. 좌측 미니멀 사이드바 (220px, 1px right specular hairline) ─────
         nav_rail = QFrame()
-        nav_rail.setObjectName("LeftNavRail")
+        nav_rail.setProperty("surfaceRole", "sidebar")
         nav_rail.setFixedWidth(220)
-        nav_rail.setStyleSheet(surface_panel_qss("LeftNavRail", radius=6))
         nav_layout = QVBoxLayout(nav_rail)
-        nav_layout.setContentsMargins(10, 12, 10, 12)
-        nav_layout.setSpacing(4)
+        nav_layout.setContentsMargins(14, 18, 14, 14)
+        nav_layout.setSpacing(6)
 
-        self.nav_hdr_lbl = QLabel("NAVIGATION")
-        self.nav_hdr_lbl.setStyleSheet(
-            f"color: {TEXT_MUTED}; font-family: {FONT_MONO}; font-size: 9.5px; "
-            "font-weight: 800; letter-spacing: 1.4px; padding-left: 6px; padding-bottom: 4px;"
-        )
+        brand_row = QHBoxLayout()
+        brand_row.setContentsMargins(8, 0, 8, 8)
+        brand_row.setSpacing(8)
+        brand_dot = EmberCoreDot(live=True, tone="gold", size=14)
+        brand_row.addWidget(brand_dot)
+        brand = QLabel("NEXUS Remapper")
+        brand.setProperty("role", "card-title")
+        brand_row.addWidget(brand, 1)
+        nav_layout.addLayout(brand_row)
+
+        self.nav_hdr_lbl = QLabel("Workspace")
+        self.nav_hdr_lbl.setProperty("role", "muted")
         nav_layout.addWidget(self.nav_hdr_lbl)
 
         self._nav_group = QButtonGroup(self)
         self._nav_group.setExclusive(True)
-        for idx, (num, label, icon_kind) in enumerate(_NAV_ITEMS):
-            btn = NavRailButton(num, label, icon_kind)
+        for idx, (label, icon_kind) in enumerate(_NAV_ITEMS):
+            btn = NavRailButton(label, icon_kind)
             btn.clicked.connect(lambda _chk, page_idx=idx: self.switch_page(page_idx))
             self._nav_group.addButton(btn, idx)
             self.nav_buttons.append(btn)
@@ -298,32 +203,90 @@ class MainWindow(QMainWindow):
         nav_layout.addStretch(1)
 
         rail_info = QFrame()
-        rail_info.setObjectName("NavRailFooterSlot")
-        rail_info.setStyleSheet(inset_slot_qss("NavRailFooterSlot", radius=4))
+        rail_info.setProperty("surfaceRole", "inset")
         ri_layout = QVBoxLayout(rail_info)
-        ri_layout.setContentsMargins(10, 8, 10, 8)
+        ri_layout.setContentsMargins(10, 10, 10, 10)
         ri_layout.setSpacing(8)
 
         self.panic_rail_lbl = QLabel("비상 탈출: ESC + F12")
-        self.panic_rail_lbl.setStyleSheet(
-            f"color: {STATUS_DANGER}; font-family: {FONT_MONO}; font-size: 10px; "
-            "font-weight: 700; border: none; background: transparent;"
-        )
+        self.panic_rail_lbl.setProperty("role", "error")
         ri_layout.addWidget(self.panic_rail_lbl)
 
         self.hide_tray_btn = QPushButton("트레이로 숨기기")
-        self.hide_tray_btn.setFixedHeight(26)
+        self.hide_tray_btn.setProperty("btnRole", "ghost")
+        self.hide_tray_btn.setFixedHeight(28)
         self.hide_tray_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.hide_tray_btn.setStyleSheet(
-            tactile_button_qss("default", radius=4, padding="0 8px", font_size=10)
-        )
         self.hide_tray_btn.clicked.connect(self.close)
         ri_layout.addWidget(self.hide_tray_btn)
         nav_layout.addWidget(rail_info)
 
-        body_row.addWidget(nav_rail)
+        root.addWidget(nav_rail)
 
-        # 우측 6개 전용 페이지 스택
+        # ── 2. 우측 메인 캔버스 (--bg-base) ──────────────────────────────────
+        canvas = QWidget()
+        c_layout = QVBoxLayout(canvas)
+        c_layout.setContentsMargins(20, 16, 20, 14)
+        c_layout.setSpacing(14)
+
+        # (2-A) 상단 커맨드 바 — 1px Warm Rim-Light #1 (2곳 중 첫 번째)
+        self.command_bar = DarkroomSurfaceCard(
+            warm_rim=True, radius_token="--radius-pill", bg_token="--bg-surface"
+        )
+        self.command_bar.setFixedHeight(42)
+        h_layout = QHBoxLayout(self.command_bar)
+        h_layout.setContentsMargins(14, 0, 12, 0)
+        h_layout.setSpacing(8)
+
+        self.engine_pill = LedStatusPill(self.engine_manager.status_badge, tone="orange")
+        self.engine_led = self.engine_pill.led
+        self.engine_badge = self.engine_pill.text_label
+        h_layout.addWidget(self.engine_pill)
+
+        self.active_proc_lbl = QLabel("ACTIVE: - [default]")
+        self.active_proc_lbl.setProperty("pillState", "neutral")
+        self.active_proc_lbl.setFixedHeight(26)
+        self.active_proc_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        h_layout.addWidget(self.active_proc_lbl)
+
+        self.active_layer_lbl = QLabel(f"LAYER: {self.executor.active_layer}")
+        self.active_layer_lbl.setProperty("pillState", "gold")
+        self.active_layer_lbl.setFixedHeight(26)
+        self.active_layer_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        h_layout.addWidget(self.active_layer_lbl)
+
+        self.bypass_btn = QPushButton()
+        self.bypass_btn.setProperty("btnRole", "bypass-pill")
+        self.bypass_btn.setCheckable(True)
+        self.bypass_btn.setFixedHeight(26)
+        self.bypass_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.bypass_btn.toggled.connect(self._on_bypass_toggled)
+        h_layout.addWidget(self.bypass_btn)
+
+        h_layout.addStretch(1)
+
+        self.header_topology_lbl = QLabel("Monitors: Auto")
+        self.header_topology_lbl.setProperty("pillState", "neutral")
+        self.header_topology_lbl.setFixedHeight(26)
+        self.header_topology_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        h_layout.addWidget(self.header_topology_lbl)
+
+        c_layout.addWidget(self.command_bar)
+
+        # (2-B) 에디토리얼 페이지 타이틀 + 활성 메인 워크스페이스 셸 (1px Warm Rim-Light #2)
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(4, 0, 4, 0)
+        self.page_title_lbl = QLabel("Hardware Hub")
+        self.page_title_lbl.setProperty("role", "editorial")
+        title_row.addWidget(self.page_title_lbl, 1)
+        c_layout.addLayout(title_row)
+
+        self.focal_shell = DarkroomSurfaceCard(
+            warm_rim=True, radius_token="--radius-card", bg_token="--bg-canvas"
+        )
+        fs_layout = QVBoxLayout(self.focal_shell)
+        fs_layout.setContentsMargins(12, 12, 12, 12)
+        fs_layout.setSpacing(0)
+
         self.page_stack = QStackedWidget()
 
         self.device_panel = DevicePanel()
@@ -334,7 +297,6 @@ class MainWindow(QMainWindow):
                 self.config_store.settings.get("auto_launch_missing_apps", False)
             )
         )
-        # 기존 테스트/호출자 호환 별칭
         self.topology_combo = self.workspace_page.topology_combo
         self.snapshot_btn = self.workspace_page.snapshot_btn
         self.preset_list = self.workspace_page.preset_list
@@ -381,52 +343,42 @@ class MainWindow(QMainWindow):
 
         self.readme_page = ReadMePage()
 
-        self.page_stack.addWidget(self.hardware_page)   # 0: HARDWARE HUB
-        self.page_stack.addWidget(self.workspace_page)  # 1: WORKSPACE PRESETS
-        self.page_stack.addWidget(self.layer_page)      # 2: MAPPING LAYER
-        self.page_stack.addWidget(self.mapping_panel)   # 3: MAPPING MATRIX
-        self.page_stack.addWidget(self.settings_page)   # 4: SETTINGS
-        self.page_stack.addWidget(self.readme_page)     # 5: READ ME
+        self.page_stack.addWidget(self.hardware_page)   # 0
+        self.page_stack.addWidget(self.workspace_page)  # 1
+        self.page_stack.addWidget(self.layer_page)      # 2
+        self.page_stack.addWidget(self.mapping_panel)   # 3
+        self.page_stack.addWidget(self.settings_page)   # 4
+        self.page_stack.addWidget(self.readme_page)     # 5
 
-        body_row.addWidget(self.page_stack, 1)
-        root.addLayout(body_row, 1)
+        fs_layout.addWidget(self.page_stack, 1)
+        c_layout.addWidget(self.focal_shell, 1)
 
-        # ── 3. 하단 26px 실시간 텔레메트리 상태 티커 ──────────────────────────
+        # (2-C) 하단 상태 피드백 바 (Quiet Darkroom)
         self.status_ticker = QFrame()
-        self.status_ticker.setObjectName("BottomStatusTicker")
-        self.status_ticker.setFixedHeight(26)
-        self.status_ticker.setStyleSheet(surface_panel_qss("BottomStatusTicker", radius=4))
+        self.status_ticker.setProperty("surfaceRole", "footer-bar")
+        self.status_ticker.setFixedHeight(28)
         st_layout = QHBoxLayout(self.status_ticker)
         st_layout.setContentsMargins(12, 0, 12, 0)
         st_layout.setSpacing(8)
 
-        self.ticker_dot = QLabel()
-        self.ticker_dot.setFixedSize(6, 6)
-        self.ticker_dot.setStyleSheet(
-            f"background-color: {ACCENT_CYAN}; border-radius: 3px; border: none;"
-        )
+        self.ticker_dot = EmberCoreDot(live=True, tone="gold", size=12)
         st_layout.addWidget(self.ticker_dot)
 
-        self.status_ticker_lbl = QLabel("NEXUS TACTILE HUD READY — STANDBY")
-        self.status_ticker_lbl.setStyleSheet(
-            f"color: {TEXT_SECONDARY}; font-family: {FONT_MONO}; font-size: 10.5px; "
-            "border: none; background: transparent;"
-        )
+        self.status_ticker_lbl = QLabel("NEXUS Darkroom ready")
+        self.status_ticker_lbl.setProperty("role", "mono-muted")
         st_layout.addWidget(self.status_ticker_lbl, 1)
 
-        panic_hint = QLabel("PANIC EXIT: ESC + F12")
-        panic_hint.setStyleSheet(
-            f"color: {STATUS_DANGER}; font-family: {FONT_MONO}; font-size: 9.5px; "
-            "font-weight: 800; letter-spacing: 0.6px; border: none; background: transparent;"
-        )
+        panic_hint = QLabel("Panic Exit: ESC + F12")
+        panic_hint.setProperty("role", "mono-muted")
         st_layout.addWidget(panic_hint)
 
-        root.addWidget(self.status_ticker)
+        c_layout.addWidget(self.status_ticker)
+        root.addWidget(canvas, 1)
 
         self.switch_page(0)
 
     def switch_page(self, index: int) -> None:
-        """좌측 내비게이션 레일 선택에 따라 우측 `QStackedWidget` 화면을 전환한다."""
+        """좌측 사이드바 선택에 따라 우측 워크스페이스 화면을 전환한다."""
         if not (0 <= index < self.page_stack.count()):
             return
         self.page_stack.setCurrentIndex(index)
@@ -436,11 +388,11 @@ class MainWindow(QMainWindow):
             btn.setChecked(active)
             btn.blockSignals(False)
             btn.apply_active_style(active)
+        self.page_title_lbl.setText(tr(self._language, f"nav_{index}"))
         if index == 2:
             self.layer_page.refresh_running_processes()
 
     def _wire_signals(self) -> None:
-        # 백그라운드 워커 -> pyqtSignal 브리지
         self.engine_manager.add_event_callback(self.bridge.input_received.emit)
         self.engine_manager.add_listen_callback(self.bridge.listen_captured.emit)
         self.engine_manager.add_mode_callback(self.bridge.engine_mode_changed.emit)
@@ -455,14 +407,12 @@ class MainWindow(QMainWindow):
         self.bridge.engine_mode_changed.connect(self._on_engine_mode_changed)
         self.bridge.panic_triggered.connect(self._on_panic_triggered)
 
-        # HARDWARE HUB
         self.device_panel.listen_toggled.connect(self._on_listen_toggled)
         self.device_panel.refresh_requested.connect(self._on_refresh_devices)
         self.device_panel.device_selected.connect(self._on_device_selected)
         self.device_panel.protection_toggled.connect(self._on_protection_toggled)
         self.device_panel.alias_changed.connect(self._on_device_alias_changed)
 
-        # WORKSPACE PRESETS
         self.workspace_page.topology_changed.connect(self._on_topology_key_changed)
         self.workspace_page.snapshot_requested.connect(self._on_capture_snapshot)
         self.workspace_page.apply_preset_requested.connect(self._on_apply_preset_by_name)
@@ -472,15 +422,14 @@ class MainWindow(QMainWindow):
         self.workspace_page.export_presets_requested.connect(self._on_export_presets_dialog)
         self.workspace_page.import_presets_requested.connect(self._on_import_presets_dialog)
 
-        # MAPPING LAYER
         self.layer_page.layer_created.connect(self._on_create_layer)
+        self.layer_page.layer_mode_changed.connect(self._on_layer_mode_changed)
         self.layer_page.layer_renamed.connect(self._on_rename_layer)
         self.layer_page.layer_deleted.connect(self._on_delete_layer)
         self.layer_page.layer_processes_updated.connect(self._on_layer_processes_updated)
         self.layer_page.export_layer_requested.connect(self._on_export_layer_dialog)
         self.layer_page.import_layer_requested.connect(self._on_import_layer_dialog)
 
-        # MAPPING MATRIX
         self.mapping_panel.rule_upserted.connect(self._on_rule_upserted)
         self.mapping_panel.rule_deleted.connect(self._on_rule_deleted)
         self.mapping_panel.rules_cleared.connect(self._on_rules_cleared)
@@ -489,7 +438,6 @@ class MainWindow(QMainWindow):
         self.mapping_panel.export_matrix_requested.connect(self._on_export_matrix_dialog)
         self.mapping_panel.import_matrix_requested.connect(self._on_import_matrix_dialog)
 
-        # SETTINGS
         self.settings_page.prefer_kernel_toggled.connect(self._on_prefer_kernel_toggled)
         self.settings_page.minimize_tray_toggled.connect(self._on_minimize_tray_toggled)
         self.settings_page.auto_switch_layer_toggled.connect(self._on_auto_switch_layer_toggled)
@@ -508,14 +456,15 @@ class MainWindow(QMainWindow):
     def _init_tray_icon(self) -> None:
         if not QSystemTrayIcon.isSystemTrayAvailable():
             return
-        tray = QSystemTrayIcon(_create_nexus_tray_icon(), self)
+        tray_ico = self._app_icon if not self._app_icon.isNull() else _create_nexus_tray_icon()
+        tray = QSystemTrayIcon(tray_ico, self)
 
         menu = QMenu(self)
         show_act = QAction(tr(self._language, "tray_show"), self)
         show_act.triggered.connect(self._restore_from_tray)
         menu.addAction(show_act)
 
-        status_act = QAction("현재 엔진/프로파일 상태: 초기화 중...", self)
+        status_act = QAction("현재 엔진/프로파일 상태: 초기화 중", self)
         status_act.setEnabled(False)
         menu.addAction(status_act)
 
@@ -586,27 +535,132 @@ class MainWindow(QMainWindow):
 
         if self.context_watcher.current_context is not None:
             self._on_context_changed(self.context_watcher.current_context)
+        else:
+            self.evaluate_process_layer_state()
 
         self.append_log(f"NEXUS 커맨드 센터 초기화 완료 | {self.engine_manager.status_badge}")
 
     def _sync_layers_everywhere(self) -> None:
         layers = self.config_store.list_layers()
         self.executor.set_layers(layers)
-        self.context_watcher.set_layer_bindings(self.config_store.get_layer_bindings())
+        focus_bindings = self.config_store.get_focus_layer_bindings()
+        process_bindings = self.config_store.get_process_layer_bindings()
+        self.context_watcher.set_layer_bindings(focus_bindings)
+        self.context_watcher.set_process_layer_bindings(process_bindings)
         self.mapping_panel.set_layers(layers)
         self.layer_page.refresh_layers(self.config_store.layer_configs)
+        if process_bindings:
+            if not self._process_poll_timer.isActive():
+                self._process_poll_timer.start()
+        else:
+            if self._process_poll_timer.isActive():
+                self._process_poll_timer.stop()
+
+    def _close_conflict_dialog(self) -> None:
+        if self._conflict_dialog is not None:
+            try:
+                self._conflict_dialog.close()
+            except RuntimeError:
+                pass
+            self._conflict_dialog = None
+
+    def _on_process_poll_tick(self) -> None:
+        if not self.config_store.get_process_layer_bindings():
+            self._process_poll_timer.stop()
+            return
+        self.evaluate_process_layer_state()
+
+    def _on_conflict_layer_chosen(self, chosen_layer: str) -> None:
+        if chosen_layer not in self.config_store.list_layers():
+            return
+        self._active_process_layer_override = chosen_layer
+        if self.executor.active_layer != chosen_layer:
+            self.executor.shift_layer(chosen_layer, mode="set")
+        else:
+            self.active_layer_lbl.setText(f"LAYER: {chosen_layer}")
+            self._update_tray_status()
+        self.append_log(
+            f"[PROCESS LAYER] 충돌 선택 적용 ➔ '{chosen_layer}'",
+            tone="gold",
+        )
+
+    def evaluate_process_layer_state(
+        self, running_processes: list[str] | set[str] | None = None
+    ) -> list[str]:
+        """실행 중인 프로세스 목록을 기준으로 `프로세스 지정` 모드 레이어를 평가·전환한다."""
+        process_bindings = self.config_store.get_process_layer_bindings()
+        if running_processes is None:
+            if not process_bindings:
+                candidates: list[str] = []
+            else:
+                candidates = self.config_store.resolve_running_process_layers(
+                    list_running_process_names()
+                )
+        else:
+            candidates = self.config_store.resolve_running_process_layers(
+                running_processes
+            )
+
+        if len(candidates) == 0:
+            was_override = self._active_process_layer_override is not None
+            self._last_conflict_combo = None
+            self._close_conflict_dialog()
+            self._active_process_layer_override = None
+            if was_override and self.config_store.settings.get("auto_switch_layer", True):
+                fallback_layer = self.config_store.resolve_layer_for_process(
+                    self._active_process
+                )
+                if fallback_layer != self.executor.active_layer:
+                    self.executor.shift_layer(fallback_layer, mode="set")
+            return candidates
+
+        if len(candidates) == 1:
+            chosen = candidates[0]
+            self._last_conflict_combo = None
+            self._close_conflict_dialog()
+            self._active_process_layer_override = chosen
+            if self.executor.active_layer != chosen:
+                self.executor.shift_layer(chosen, mode="set")
+            return candidates
+
+        combo = frozenset(candidates)
+        if combo == self._last_conflict_combo:
+            return candidates
+
+        self._last_conflict_combo = combo
+        self._close_conflict_dialog()
+        candidate_pairs = [
+            (layer_name, process_bindings.get(layer_name, ""))
+            for layer_name in candidates
+        ]
+        dlg = ProcessLayerConflictDialog(
+            candidates=candidate_pairs,
+            active_layer=self.executor.active_layer,
+            lang=self._language,
+            parent=None,
+        )
+        dlg.layer_chosen.connect(self._on_conflict_layer_chosen)
+        self._conflict_dialog = dlg
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        self.append_log(
+            f"[PROCESS LAYER] 동시 실행 충돌 감지 ({', '.join(candidates)}) — 선택 팝업 표시",
+            tone="orange",
+        )
+        return candidates
 
     def _update_engine_badge(self, mode: EngineMode, reason: str = "") -> None:
         badge_text = self.engine_manager.status_badge
         if mode == EngineMode.KERNEL:
-            fg, bg, bd = STATUS_OK, STATUS_OK_BG, STATUS_OK_BORDER
+            pill_state, live = "gold", True
         elif mode == EngineMode.USER_FALLBACK:
-            fg, bg, bd = STATUS_WARN, STATUS_WARN_BG, STATUS_WARN_BORDER
+            pill_state, live = "orange", True
         else:
-            fg, bg, bd = STATUS_DANGER, STATUS_DANGER_BG, STATUS_DANGER_BORDER
+            pill_state, live = "red", False
 
         self.engine_pill.setToolTip(reason or badge_text)
-        self.engine_pill.set_state(badge_text, fg=fg, bg=bg, border=bd)
+        self.engine_pill.set_state(badge_text, pill_state=pill_state, live=live)
         self._update_tray_status()
 
     def _refresh_topology_dropdown(self) -> None:
@@ -616,23 +670,21 @@ class MainWindow(QMainWindow):
         choices = self.orchestrator.get_available_environment_choices()
         selected = self.orchestrator.selected_profile_mode
         self.workspace_page.set_topology_choices(choices, selected)
-        mode_tag = "AUTO" if selected == AUTO_PROFILE_KEY else "MANUAL"
-        self.header_topology_lbl.setText(f"MONITORS({len(mons)}): {mode_tag} · {fp}")
+        mode_tag = "Auto" if selected == AUTO_PROFILE_KEY else "Manual"
+        self.header_topology_lbl.setText(f"Monitors({len(mons)}): {mode_tag} · {fp}")
 
     def _refresh_preset_list(self) -> None:
         presets = self.orchestrator.list_presets()
         self.workspace_page.refresh_presets(presets)
         self.mapping_panel.set_available_presets([p.name for p in presets])
 
-    def _set_ticker(self, message: str, accent: str = ACCENT_CYAN) -> None:
-        self.ticker_dot.setStyleSheet(
-            f"background-color: {accent}; border-radius: 3px; border: none;"
-        )
+    def _set_ticker(self, message: str, tone: str = "gold") -> None:
+        self.ticker_dot.set_state(live=(tone in ("gold", "orange")), tone=tone)
         self.status_ticker_lbl.setText(message)
 
-    def append_log(self, message: str, accent: str = ACCENT_CYAN) -> None:
+    def append_log(self, message: str, tone: str = "gold") -> None:
         self.log_view.appendPlainText(message)
-        self._set_ticker(message, accent=accent)
+        self._set_ticker(message, tone=tone)
 
     def _save_all_config(self) -> None:
         self.config_store.data["devices"] = self.registry.export_devices(
@@ -665,13 +717,13 @@ class MainWindow(QMainWindow):
             res = self.executor.execute(rule.action, event=event)
             self.append_log(
                 f"[TRIGGER] {event.device_name} | {event.event_type_str} ➔ {res.detail}",
-                accent=ACCENT_AMBER_GLOW,
+                tone="orange",
             )
         else:
             self.mapping_panel.flash_matching_event(event)
             self._set_ticker(
                 f"[INPUT] {event.device_name} | {event.event_type_str} (미매핑)",
-                accent=TEXT_SECONDARY,
+                tone="muted",
             )
 
     @pyqtSlot(object, object)
@@ -697,7 +749,7 @@ class MainWindow(QMainWindow):
         self._save_all_config()
         self.append_log(
             f"[LISTEN CAPTURE] {device.display_name} | {rule.event_type} (code={event.code})",
-            accent=ACCENT_CYAN,
+            tone="gold",
         )
 
     @pyqtSlot(object)
@@ -708,10 +760,20 @@ class MainWindow(QMainWindow):
             f"ACTIVE: {self._active_process} [{ctx.matched_profile}]"
         )
 
-        if self.config_store.settings.get("auto_switch_layer", True):
+        if (
+            self._active_process_layer_override is None
+            and self.config_store.get_process_layer_bindings()
+        ):
+            self.evaluate_process_layer_state()
+
+        if (
+            self._active_process_layer_override is None
+            and self.config_store.settings.get("auto_switch_layer", True)
+        ):
+            focus_layers = set(self.config_store.get_focus_layer_bindings().keys()) | {"default"}
             target_layer = (
                 ctx.matched_layer
-                if ctx.matched_layer in self.config_store.list_layers()
+                if ctx.matched_layer in focus_layers
                 else self.config_store.resolve_layer_for_process(self._active_process)
             )
             if target_layer != self.executor.active_layer:
@@ -720,7 +782,7 @@ class MainWindow(QMainWindow):
         self._update_tray_status()
         self._set_ticker(
             f"[CONTEXT] {self._active_process} (프로파일:{ctx.matched_profile} · 레이어:{self.executor.active_layer})",
-            accent=ACCENT_CYAN,
+            tone="gold",
         )
 
     @pyqtSlot(object)
@@ -729,7 +791,7 @@ class MainWindow(QMainWindow):
         if diff.added or diff.removed:
             self.append_log(
                 f"[HOT-PLUG] +{len(diff.added)} / -{len(diff.removed)} (연결={diff.connected_count})",
-                accent=STATUS_WARN,
+                tone="orange",
             )
 
     @pyqtSlot(object, str)
@@ -742,7 +804,7 @@ class MainWindow(QMainWindow):
         self._update_engine_badge(EngineMode.STOPPED, "Panic Exit (ESC+F12)")
         self.append_log(
             "[PANIC EXIT] ESC + F12 감지 ➔ 모든 훅 및 엔진 즉시 해제",
-            accent=STATUS_DANGER,
+            tone="red",
         )
         self.force_quit()
 
@@ -755,12 +817,12 @@ class MainWindow(QMainWindow):
                 self.registry.begin_listen()
                 self.append_log(
                     "[LISTEN MODE] 활성화 — 보조 키패드나 다이얼을 조작하세요.",
-                    accent=ACCENT_CYAN,
+                    tone="gold",
                 )
         else:
             if self.registry.is_listening:
                 self.registry.end_listen()
-                self.append_log("[LISTEN MODE] 종료", accent=TEXT_SECONDARY)
+                self.append_log("[LISTEN MODE] 종료", tone="muted")
 
     @pyqtSlot()
     def _on_refresh_devices(self) -> None:
@@ -783,7 +845,7 @@ class MainWindow(QMainWindow):
             self._save_all_config()
             self.append_log(
                 f"[ALIAS] {device_id} ➔ '{alias or '(기본 이름)'}'",
-                accent=ACCENT_AMBER,
+                tone="gold",
             )
 
     @pyqtSlot(str, bool)
@@ -797,53 +859,89 @@ class MainWindow(QMainWindow):
         self._save_all_config()
         self.append_log(
             f"[SAFEGUARD] {device_id} ➔ {'PROTECTED' if protected else 'AUXILIARY'}",
-            accent=STATUS_WARN if protected else STATUS_OK,
+            tone="orange" if protected else "gold",
         )
 
     # ── 사용자 정의 레이어 관리 슬롯 ─────────────────────────────────────────
 
     @pyqtSlot(str)
-    def _on_create_layer(self, name: str) -> None:
+    @pyqtSlot(str, str)
+    def _on_create_layer(
+        self, name: str, trigger_mode: str = TRIGGER_MODE_FOCUS
+    ) -> None:
         try:
-            self.config_store.create_layer(name)
+            self.config_store.create_layer(name, trigger_mode=trigger_mode)
         except ValueError as exc:
             QMessageBox.warning(self, "레이어 생성 오류", str(exc))
             return
         self._sync_layers_everywhere()
         self._save_all_config()
-        self.append_log(f"[LAYER] 새 레이어 생성 ➔ '{name}'", accent=ACCENT_AMBER)
+        self.append_log(
+            f"[LAYER] 새 레이어 생성 ➔ '{name}' ({trigger_mode})",
+            tone="gold",
+        )
+
+    @pyqtSlot(str, str)
+    def _on_layer_mode_changed(self, layer_name: str, trigger_mode: str) -> None:
+        try:
+            changed = self.config_store.set_layer_trigger_mode(layer_name, trigger_mode)
+        except ValueError as exc:
+            QMessageBox.warning(self, "레이어 모드 변경 오류", str(exc))
+            self._sync_layers_everywhere()
+            return
+        self._sync_layers_everywhere()
+        if changed:
+            self._save_all_config()
+            self.evaluate_process_layer_state()
+            self.append_log(
+                f"[LAYER MODE] '{layer_name}' ➔ {trigger_mode}",
+                tone="gold",
+            )
 
     @pyqtSlot(str, str)
     def _on_rename_layer(self, old_name: str, new_name: str) -> None:
         if not self.config_store.rename_layer(old_name, new_name):
             QMessageBox.warning(self, "이름 변경 실패", "중복되거나 유효하지 않은 이름입니다.")
             return
+        if self._active_process_layer_override == old_name:
+            self._active_process_layer_override = new_name
         self._sync_layers_everywhere()
         self.mapping_panel.load_rules(self.config_store.mappings)
         if self.executor.active_layer == old_name:
             self.executor.shift_layer(new_name, mode="set")
         self._save_all_config()
-        self.append_log(f"[LAYER] 이름 변경 ➔ '{old_name}' → '{new_name}'", accent=ACCENT_AMBER)
+        self.evaluate_process_layer_state()
+        self.append_log(f"[LAYER] 이름 변경 ➔ '{old_name}' → '{new_name}'", tone="gold")
 
     @pyqtSlot(str)
     def _on_delete_layer(self, name: str) -> None:
         if not self.config_store.delete_layer(name, delete_rules=True):
             return
+        if self._active_process_layer_override == name:
+            self._active_process_layer_override = None
         self._sync_layers_everywhere()
         self.mapping_panel.load_rules(self.config_store.mappings)
         if self.executor.active_layer == name:
             self.executor.shift_layer("default", mode="set")
         self._save_all_config()
-        self.append_log(f"[LAYER] 레이어 삭제 완료 ➔ '{name}'", accent=STATUS_DANGER)
+        self.evaluate_process_layer_state()
+        self.append_log(f"[LAYER] 레이어 삭제 완료 ➔ '{name}'", tone="red")
 
     @pyqtSlot(str, list)
     def _on_layer_processes_updated(self, layer_name: str, processes: list[str]) -> None:
-        if self.config_store.set_layer_processes(layer_name, processes):
+        try:
+            changed = self.config_store.set_layer_processes(layer_name, processes)
+        except ValueError as exc:
+            QMessageBox.warning(self, "프로세스 바인딩 오류", str(exc))
+            self._sync_layers_everywhere()
+            return
+        if changed:
             self._sync_layers_everywhere()
             self._save_all_config()
+            self.evaluate_process_layer_state()
             self.append_log(
                 f"[LAYER BIND] '{layer_name}' ➔ {', '.join(processes) or '없음'}",
-                accent=ACCENT_CYAN,
+                tone="gold",
             )
 
     @pyqtSlot(object)
@@ -855,7 +953,7 @@ class MainWindow(QMainWindow):
     def _on_rule_deleted(self, rule_id: str) -> None:
         self.config_store.remove_mapping(rule_id)
         self._save_all_config()
-        self.append_log(f"[MAPPING] 매핑 카드 삭제 완료 (id={rule_id})", accent=TEXT_SECONDARY)
+        self.append_log(f"[MAPPING] 매핑 카드 삭제 완료 (id={rule_id})", tone="muted")
 
     @pyqtSlot(list)
     def _on_rules_cleared(self, rule_ids: list[str]) -> None:
@@ -863,7 +961,7 @@ class MainWindow(QMainWindow):
         self._save_all_config()
         self.append_log(
             f"[MAPPING] 선택 범위 매핑 목록 초기화 완료 ({removed}개 삭제)",
-            accent=STATUS_WARN,
+            tone="orange",
         )
 
     @pyqtSlot(str)
@@ -876,14 +974,14 @@ class MainWindow(QMainWindow):
         self.active_layer_lbl.setText(f"LAYER: {layer}")
         self._save_all_config()
         self._update_tray_status()
-        self.append_log(f"[LAYER] 활성 레이어 전환 ➔ {layer}", accent=ACCENT_AMBER)
+        self.append_log(f"[LAYER] 활성 레이어 전환 ➔ {layer}", tone="gold")
 
     @pyqtSlot(str)
     def _on_topology_key_changed(self, key: str) -> None:
         self.orchestrator.select_profile_mode(key or AUTO_PROFILE_KEY)
         self._refresh_topology_dropdown()
         self._save_all_config()
-        self.append_log(f"[TOPOLOGY] 모니터 환경 모드 ➔ {key}", accent=ACCENT_CYAN)
+        self.append_log(f"[TOPOLOGY] 모니터 환경 모드 ➔ {key}", tone="gold")
 
     def _on_capture_snapshot(self) -> None:
         default_name = f"Preset_{len(self.orchestrator.list_presets()) + 1}"
@@ -901,7 +999,7 @@ class MainWindow(QMainWindow):
         self._save_all_config()
         self.append_log(
             f"[SNAPSHOT] '{preset.name}' 저장 ({len(preset.placements)}개 창, {preset.topology_fingerprint})",
-            accent=ACCENT_AMBER,
+            tone="gold",
         )
 
     @pyqtSlot(bool)
@@ -915,7 +1013,7 @@ class MainWindow(QMainWindow):
         self.append_log(
             f"[LAYOUT] '{preset_name}' 적용 ➔ 이동 {res.moved_count}, 실행 {res.launched_count}, "
             f"건너뜀 {len(res.skipped_processes)}",
-            accent=ACCENT_AMBER,
+            tone="gold",
         )
 
     @pyqtSlot(str)
@@ -923,7 +1021,7 @@ class MainWindow(QMainWindow):
         self.orchestrator.delete_preset(preset_name)
         self._refresh_preset_list()
         self._save_all_config()
-        self.append_log(f"[LAYOUT] '{preset_name}' 삭제 완료", accent=TEXT_SECONDARY)
+        self.append_log(f"[LAYOUT] '{preset_name}' 삭제 완료", tone="muted")
 
     @pyqtSlot(str, str)
     def _on_preset_focus_changed(self, preset_name: str, focus_process: str) -> None:
@@ -933,8 +1031,6 @@ class MainWindow(QMainWindow):
         preset.focus_process = focus_process
         self._refresh_preset_list()
         self._save_all_config()
-
-    # ── Settings 페이지 슬롯 ─────────────────────────────────────────────────
 
     @pyqtSlot(bool)
     def _on_prefer_kernel_toggled(self, checked: bool) -> None:
@@ -953,7 +1049,7 @@ class MainWindow(QMainWindow):
         self._save_all_config()
         self.append_log(
             f"[DWM] 창 투명 테두리 보정 ➔ {'ON' if checked else 'OFF'}",
-            accent=ACCENT_CYAN if checked else TEXT_SECONDARY,
+            tone="gold" if checked else "muted",
         )
 
     def set_bypass(self, enabled: bool, persist: bool = True) -> None:
@@ -964,21 +1060,9 @@ class MainWindow(QMainWindow):
         self.bypass_btn.blockSignals(True)
         self.bypass_btn.setChecked(enabled)
         self.bypass_btn.blockSignals(False)
-        if enabled:
-            self.bypass_btn.setText(tr(self._language, "bypass_on"))
-            self.bypass_btn.setStyleSheet(
-                f"QPushButton {{ background-color: {STATUS_WARN_BG}; color: {STATUS_WARN}; "
-                f"border: 1px solid {STATUS_WARN}; border-radius: 4px; padding: 0 10px; "
-                f"font-family: {FONT_MONO}; font-size: 10px; font-weight: 800; }}"
-            )
-        else:
-            self.bypass_btn.setText(tr(self._language, "bypass_off"))
-            self.bypass_btn.setStyleSheet(
-                f"QPushButton {{ background-color: {STATUS_OK_BG}; color: {STATUS_OK}; "
-                f"border: 1px solid {STATUS_OK_BORDER}; border-radius: 4px; padding: 0 10px; "
-                f"font-family: {FONT_MONO}; font-size: 10px; font-weight: 800; }}"
-                f"QPushButton:hover {{ border-color: {STATUS_OK}; }}"
-            )
+        self.bypass_btn.setProperty("bypass", enabled)
+        self.bypass_btn.setText(tr(self._language, "bypass_on" if enabled else "bypass_off"))
+        repolish(self.bypass_btn)
 
         self.settings_page.set_bypass_checked(enabled)
         if self._tray_bypass_action is not None:
@@ -999,6 +1083,9 @@ class MainWindow(QMainWindow):
         self.panic_rail_lbl.setText(tr(self._language, "panic_short"))
         for idx, btn in enumerate(self.nav_buttons):
             btn.set_label(tr(self._language, f"nav_{idx}"))
+
+        cur_idx = self.page_stack.currentIndex()
+        self.page_title_lbl.setText(tr(self._language, f"nav_{cur_idx}"))
 
         self.hide_tray_btn.setText(tr(self._language, "hide_to_tray"))
         self.bypass_btn.setText(
@@ -1031,7 +1118,7 @@ class MainWindow(QMainWindow):
         self.config_store.backup_to_file(file_path)
         self.append_log(
             f"[BACKUP] 전체 설정 백업 완료 ➔ {file_path.name}",
-            accent=STATUS_OK,
+            tone="gold",
         )
 
     def restore_full_config(self, file_path: Path) -> None:
@@ -1053,7 +1140,7 @@ class MainWindow(QMainWindow):
         self._sync_initial_state()
         self.append_log(
             f"[RESTORE] 전체 설정 복원 완료 ➔ {file_path.name}",
-            accent=ACCENT_AMBER,
+            tone="gold",
         )
 
     @pyqtSlot(bool)
@@ -1068,7 +1155,7 @@ class MainWindow(QMainWindow):
         try:
             cmd = set_windows_startup(checked, minimized=minimized)
             msg = f"등록 ({cmd})" if checked else "해제"
-            self.append_log(f"[STARTUP] Windows 자동 실행 {msg}", accent=STATUS_OK)
+            self.append_log(f"[STARTUP] Windows 자동 실행 {msg}", tone="gold")
         except OSError as exc:
             QMessageBox.warning(self, "시작 프로그램 설정 오류", str(exc))
         self._save_all_config()
@@ -1090,14 +1177,14 @@ class MainWindow(QMainWindow):
             "[BYPASS] 리매핑 일시 정지 활성화 (원본 입력 통과)"
             if checked
             else "[BYPASS] 리매핑 재개",
-            accent=STATUS_WARN if checked else STATUS_OK,
+            tone="orange" if checked else "gold",
         )
 
     @pyqtSlot(str)
     def _on_language_changed(self, lang: str) -> None:
         self.apply_language(lang)
         self._save_all_config()
-        self.append_log(f"[I18N] UI 언어 전환 ➔ {lang}", accent=ACCENT_CYAN)
+        self.append_log(f"[I18N] UI 언어 전환 ➔ {lang}", tone="gold")
 
     @pyqtSlot()
     def _on_backup_config_dialog(self) -> None:
@@ -1142,10 +1229,8 @@ class MainWindow(QMainWindow):
         self._save_all_config()
         self.append_log(
             f"[CONFIG] 저장 완료 ➔ {self.config_store.config_path}",
-            accent=STATUS_OK,
+            tone="gold",
         )
-
-    # ── 매핑 매트릭스 / 프리셋 / 단일 레이어 Export & Import ─────────────────
 
     def export_mapping_matrix(self, file_path: Path) -> int:
         count = self.config_store.export_mappings_to_file(
@@ -1154,7 +1239,7 @@ class MainWindow(QMainWindow):
         )
         self.append_log(
             f"[EXPORT] 매핑 매트릭스 {count}건 저장 완료 ➔ {file_path.name}",
-            accent=STATUS_OK,
+            tone="gold",
         )
         return count
 
@@ -1170,7 +1255,7 @@ class MainWindow(QMainWindow):
         self._save_all_config()
         self.append_log(
             f"[IMPORT] 매핑 매트릭스 {count}건 불러오기({mode}) ➔ 총 {len(self.config_store.mappings)}건",
-            accent=ACCENT_AMBER,
+            tone="gold",
         )
         return count
 
@@ -1178,7 +1263,7 @@ class MainWindow(QMainWindow):
         count = self.orchestrator.export_presets_to_file(file_path)
         self.append_log(
             f"[EXPORT] 창 배치 프리셋 {count}건 저장 완료 ➔ {file_path.name}",
-            accent=STATUS_OK,
+            tone="gold",
         )
         return count
 
@@ -1189,7 +1274,7 @@ class MainWindow(QMainWindow):
         self._save_all_config()
         self.append_log(
             f"[IMPORT] 창 배치 프리셋 {count}건 불러오기({mode}) 완료",
-            accent=ACCENT_AMBER,
+            tone="gold",
         )
         return count
 
@@ -1197,7 +1282,7 @@ class MainWindow(QMainWindow):
         count = self.config_store.export_layer_to_file(layer_name, file_path)
         self.append_log(
             f"[EXPORT] 레이어 '{layer_name}' ({count}건) 저장 완료 ➔ {file_path.name}",
-            accent=STATUS_OK,
+            tone="gold",
         )
         return count
 
@@ -1208,7 +1293,7 @@ class MainWindow(QMainWindow):
         self._save_all_config()
         self.append_log(
             f"[IMPORT] 레이어 '{layer_name}' ({count}건) 불러오기({mode}) 완료",
-            accent=ACCENT_AMBER,
+            tone="gold",
         )
         return layer_name, count
 
@@ -1303,6 +1388,8 @@ class MainWindow(QMainWindow):
     def force_quit(self) -> None:
         """트레이 최소화 없이 모든 백그라운드 엔진을 정리하고 앱을 완전 종료한다."""
         self._force_quit = True
+        self._process_poll_timer.stop()
+        self._close_conflict_dialog()
         self._save_all_config()
         self.context_watcher.stop()
         self.engine_manager.stop()
@@ -1333,6 +1420,8 @@ class MainWindow(QMainWindow):
             )
             return
 
+        self._process_poll_timer.stop()
+        self._close_conflict_dialog()
         self.context_watcher.stop()
         self.engine_manager.stop()
         if self._tray_icon is not None:

@@ -47,7 +47,7 @@ from core.hid_dial import HidDialParser  # noqa: E402
 from core.window_orchestrator import LayoutPreset, WindowOrchestrator, WindowPlacementSpec  # noqa: E402
 from main import SingleInstanceGuard  # noqa: E402
 from ui.main_window import MainWindow, NexusSignalBridge  # noqa: E402
-from ui.widgets import ToggleSwitch, qt_key_event_to_combo  # noqa: E402
+from ui.widgets import DarkroomGlowCard, DarkroomSurfaceCard, EmberCoreDot, ToggleSwitch, qt_key_event_to_combo  # noqa: E402
 
 
 def verify_config_roundtrip_and_frozen_path() -> None:
@@ -517,11 +517,23 @@ def verify_headless_ui_and_signals() -> None:
         assert "ハードウェア" in win.nav_buttons[0].text()
         assert "緊急脱出" in win.readme_page.browser.toPlainText()
         win.apply_language("en")
-        assert "HARDWARE HUB" in win.nav_buttons[0].text()
+        assert "Hardware Hub" in win.nav_buttons[0].text()
         assert "Emergency Panic Exit" in win.readme_page.browser.toPlainText()
         win.apply_language("ko")
-        assert "HARDWARE HUB" in win.nav_buttons[0].text()
+        assert "Hardware Hub" in win.nav_buttons[0].text()
         assert "비상 탈출 안전장치" in win.readme_page.browser.toPlainText()
+
+        # Darkroom Filament v1.1 + 앱 아이콘 적용 확인
+        from ui.theme import load_app_icon
+
+        assert not load_app_icon().isNull()
+        assert not win.windowIcon().isNull()
+        if win._tray_icon is not None:  # noqa: SLF001
+            assert not win._tray_icon.icon().isNull()  # noqa: SLF001
+        rim_cards = [c for c in win.findChildren(DarkroomSurfaceCard) if getattr(c, "_warm_rim", False)]
+        assert len(rim_cards) <= 2 and win.command_bar in rim_cards and win.focal_shell in rim_cards
+        assert isinstance(win.engine_led, EmberCoreDot)
+        assert any(isinstance(c, DarkroomGlowCard) for c in win.mapping_panel._cards.values())  # noqa: SLF001
 
         # 14) v2.0 핵심 업그레이드 검증 (별칭, DWM 보정, 2D 미니맵, 다이얼 가속/멀티제스처, 키캡 라벨, 단일 인스턴스)
         # 14-a) 장치 별칭(Alias) 편집 및 config.json 영구 반영

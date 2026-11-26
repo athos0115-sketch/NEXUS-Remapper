@@ -233,6 +233,7 @@ class ContextWatcher:
         self,
         process_profiles: dict[str, str] | None = None,
         layer_bindings: dict[str, list[str]] | None = None,
+        process_layer_bindings: dict[str, str] | None = None,
         ignore_self: bool = False,
     ) -> None:
         self._lock = threading.RLock()
@@ -241,8 +242,12 @@ class ContextWatcher:
             for k, v in (process_profiles or DEFAULT_PROCESS_PROFILES).items()
         }
         self._process_to_layer: dict[str, str] = {}
+        self._process_layer_bindings: dict[str, str] = {}
+        self._running_process_layers: list[str] = []
         if layer_bindings:
             self.set_layer_bindings(layer_bindings)
+        if process_layer_bindings:
+            self.set_process_layer_bindings(process_layer_bindings)
         self._ignore_self = ignore_self
         self._self_pid = os.getpid()
 
@@ -256,6 +261,7 @@ class ContextWatcher:
         self._current_context: ForegroundContext | None = None
         self._callbacks: list[Callable[[ForegroundContext], None]] = []
         self._profile_callbacks: list[Callable[[ForegroundContext], None]] = []
+        self._process_layers_callbacks: list[Callable[[list[str]], None]] = []
 
     @property
     def is_running(self) -> bool:
@@ -297,6 +303,51 @@ class ContextWatcher:
             return "default"
         with self._lock:
             return self._process_to_layer.get(process_name.lower(), "default")
+
+    def set_process_layer_bindings(self, bindings: dict[str, str]) -> None:
+        """프로세스 지정 모드(`process`) `{layer_name: exe}` 바인딩 테이블을 갱신한다."""
+        cleaned: dict[str, str] = {}
+        for layer_name, proc in bindings.items():
+            name = str(layer_name).strip()
+            exe = str(proc).strip().lower()
+            if name and exe:
+                cleaned[name] = exe
+        with self._lock:
+            self._process_layer_bindings = cleaned
+
+    def add_process_layers_callback(self, cb: Callable[[list[str]], None]) -> None:
+        """실행 중인 프로세스 지정 모드 레이어 목록이 변경될 때 호출될 콜백을 등록한다."""
+        with self._lock:
+            if cb not in self._process_layers_callbacks:
+                self._process_layers_callbacks.append(cb)
+
+    def evaluate_process_layers(
+        self, running_processes: list[str] | set[str] | None = None
+    ) -> list[str]:
+        """현재 실행 중인 프로세스 목록을 기준으로 활성 `process` 모드 레이어를 평가·전파한다."""
+        procs = (
+            list_running_process_names()
+            if running_processes is None
+            else running_processes
+        )
+        running_low = {str(p).strip().lower() for p in procs if str(p).strip()}
+        with self._lock:
+            matched = [
+                layer_name
+                for layer_name, exe_low in self._process_layer_bindings.items()
+                if exe_low in running_low
+            ]
+            changed = matched != self._running_process_layers
+            if changed:
+                self._running_process_layers = list(matched)
+            cbs = list(self._process_layers_callbacks) if changed else []
+
+        for cb in cbs:
+            try:
+                cb(list(matched))
+            except Exception:
+                pass
+        return matched
 
     def add_context_callback(self, cb: Callable[[ForegroundContext], None]) -> None:
         """활성 창/프로세스 전환 시 호출될 콜백을 등록한다."""
